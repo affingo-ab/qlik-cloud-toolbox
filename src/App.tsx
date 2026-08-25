@@ -214,7 +214,7 @@ export default function App() {
               </label>
               <input
                 type="text"
-                placeholder="t.ex. affingo-ab.eu.qlikcloud.com"
+                placeholder="t.ex. din-tenant.eu.qlikcloud.com"
                 value={tenantInput}
                 onChange={(e) => setTenantInput(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
