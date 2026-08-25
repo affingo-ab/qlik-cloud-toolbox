@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, Search, AlertCircle, LogOut } from 'lucide-react';
+import { RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, Search, AlertCircle, LogOut, ShieldCheck } from 'lucide-react';
 
 interface ReloadItem {
   id: string;
@@ -13,6 +13,7 @@ interface ReloadItem {
 export default function App() {
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('qlik_api_token') || '');
+  const [webIntegrationId, setWebIntegrationId] = useState(() => localStorage.getItem('qlik_web_int_id') || '');
   const [reloads, setReloads] = useState<ReloadItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,13 +35,16 @@ export default function App() {
   const saveSettings = () => {
     localStorage.setItem('qlik_tenant_domain', tenantInput.trim());
     localStorage.setItem('qlik_api_token', apiToken.trim());
+    localStorage.setItem('qlik_web_int_id', webIntegrationId.trim());
   };
 
   const clearSettings = () => {
     localStorage.removeItem('qlik_tenant_domain');
     localStorage.removeItem('qlik_api_token');
+    localStorage.removeItem('qlik_web_int_id');
     setTenantInput('');
     setApiToken('');
+    setWebIntegrationId('');
     setReloads([]);
   };
 
@@ -57,10 +61,15 @@ export default function App() {
     setError(null);
 
     try {
-      const headers = {
+      const headers: Record<string, string> = {
         'Authorization': `Bearer ${apiToken.trim()}`,
         'Content-Type': 'application/json',
       };
+
+      // Om Web Integration ID finns angett, skicka med det för CORS-validering
+      if (webIntegrationId.trim()) {
+        headers['qlik-web-integration-id'] = webIntegrationId.trim();
+      }
 
       // 1. Dynamiska anrop mot angiven tenant
       const [reloadsRes, itemsRes, appsRes] = await Promise.all([
@@ -71,7 +80,7 @@ export default function App() {
 
       if (!reloadsRes.ok) {
         if (reloadsRes.status === 401) {
-          throw new Error('Autentiseringen misslyckades (401). Kontrollera API-nyckeln och Developer-rollen.');
+          throw new Error('Autentiseringen misslyckades (401). Kontrollera API-nyckeln och att Web Integration ID är ifyllt.');
         }
         if (reloadsRes.status === 403) {
           throw new Error('Åtkomst nekad (403). Kontrollera rättigheterna i Qlik Cloud.');
@@ -198,14 +207,14 @@ export default function App() {
 
         {/* Anslutningsinställningar */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                 <Server className="w-3.5 h-3.5" /> Tenant URL / Domän
               </label>
               <input
                 type="text"
-                placeholder="t.ex. myTenant.eu.qlikcloud.com"
+                placeholder="t.ex. affingo-ab.eu.qlikcloud.com"
                 value={tenantInput}
                 onChange={(e) => setTenantInput(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
@@ -217,9 +226,21 @@ export default function App() {
               </label>
               <input
                 type="password"
-                placeholder="Klistra in din token här..."
+                placeholder="Klistra in token..."
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Web Integration ID
+              </label>
+              <input
+                type="text"
+                placeholder="Från QMC -> Web..."
+                value={webIntegrationId}
+                onChange={(e) => setWebIntegrationId(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
               />
             </div>
