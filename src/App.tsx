@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database
+  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen
 } from 'lucide-react';
 
 interface ReloadItem {
@@ -37,10 +37,16 @@ interface MasterDimension {
   tags: string[];
 }
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState<'master-items' | 'reloads'>('master-items');
+interface VocabularyItem {
+  targetName: string;
+  type: 'field' | 'measure';
+  synonyms: string[];
+}
 
-  // Anslutningsinställningar (Admin API Token)
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'master-items' | 'vocabulary' | 'reloads'>('vocabulary');
+
+  // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('qlik_api_token') || '');
   const [webIntegrationId, setWebIntegrationId] = useState(() => localStorage.getItem('qlik_web_int_id') || '');
@@ -48,6 +54,7 @@ export default function App() {
   // Status & Laddning
   const [loading, setLoading] = useState(false);
   const [itemLoading, setItemLoading] = useState(false);
+  const [vocabLoading, setVocabLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Reloads State
@@ -68,6 +75,14 @@ export default function App() {
   const [conflictStrategy, setConflictStrategy] = useState<'skip' | 'overwrite' | 'copy'>('overwrite');
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [syncStatusLog, setSyncStatusLog] = useState<string | null>(null);
+
+  // AI Vocabulary Hub State
+  const [vocabAppId, setVocabAppId] = useState<string>('');
+  const [vocabAppSearch, setVocabAppSearch] = useState('');
+  const [vocabularyList, setVocabularyList] = useState<VocabularyItem[]>([]);
+  const [vocabSearchQuery, setVocabSearchQuery] = useState('');
+  const [newSynonymInputs, setNewSynonymInputs] = useState<Record<string, string>>({});
+  const [vocabStatusLog, setVocabStatusLog] = useState<string | null>(null);
 
   const formatTenantHost = (input: string) => {
     let clean = input.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -95,8 +110,10 @@ export default function App() {
     setAvailableApps([]);
     setMeasures([]);
     setDimensions([]);
+    setVocabularyList([]);
     setSourceAppId('');
     setTargetAppId('');
+    setVocabAppId('');
   };
 
   const getHeaders = () => {
@@ -126,7 +143,6 @@ export default function App() {
       const headers = getHeaders();
       const appsMap: Record<string, AppInfo> = {};
 
-      // A. Hämta appar med paginering
       let nextUrl: string | null = `https://${host}/api/v1/items?resourceType=app&limit=100`;
       let pageCount = 0;
 
@@ -147,39 +163,21 @@ export default function App() {
             }
           });
 
-          nextUrl = itemsData.links?.next?.href || null;
-          if (nextUrl && !nextUrl.startsWith('http')) {
-            nextUrl = `https://${host}${nextUrl}`;
+          const nextHref = itemsData.links?.next?.href;
+          if (nextHref) {
+            nextUrl = nextHref.startsWith('http') ? nextHref : `https://${host}${nextHref.startsWith('/') ? '' : '/'}${nextHref}`;
+          } else {
+            nextUrl = null;
           }
         } catch {
           break;
         }
       }
 
-      // Fallback till /api/v1/apps om items inte gav något
-      if (Object.keys(appsMap).length === 0) {
-        try {
-          const appsRes = await fetch(`https://${host}/api/v1/apps?limit=100`, { headers });
-          if (appsRes.ok) {
-            const appsData: any = await appsRes.json();
-            const appList: any[] = appsData.data || appsData || [];
-            if (Array.isArray(appList)) {
-              appList.forEach((item: any) => {
-                const id = item.id || item.resourceId;
-                const name = item.attributes?.name || item.name;
-                if (id && name) {
-                  appsMap[id] = { id, name };
-                }
-              });
-            }
-          }
-        } catch {}
-      }
-
       const sortedApps = Object.values(appsMap).sort((a, b) => a.name.localeCompare(b.name, 'sv'));
       setAvailableApps(sortedApps);
 
-      // B. Hämta Reloads
+      // Hämta Reloads
       const reloadsRes = await fetch(`https://${host}/api/v1/reloads?limit=100`, { headers });
       if (reloadsRes.ok) {
         const reloadsData: any = await reloadsRes.json();
@@ -199,8 +197,6 @@ export default function App() {
           .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
         setReloadsList(enrichedReloads);
-      } else {
-        if (reloadsRes.status === 401) throw new Error('Autentiseringen misslyckades (401). Kontrollera API-nyckel och Web Integration ID.');
       }
 
     } catch (err: any) {
@@ -211,7 +207,7 @@ export default function App() {
     }
   };
 
-  // 2. Hämta Master Items via backend
+  // 2. Hämta Master Items för Master Item Distributor
   const fetchMasterItemsForApp = async (appId: string) => {
     if (!appId || !apiToken) return;
     const host = formatTenantHost(tenantInput);
@@ -220,13 +216,9 @@ export default function App() {
     setSyncStatusLog(null);
 
     try {
-      console.log('Anropar backend /api/master-items för app:', appId);
-
       const response = await fetch('/api/master-items', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tenant: host,
           apiKey: apiToken.trim(),
@@ -240,8 +232,6 @@ export default function App() {
       }
 
       const data = await response.json();
-      console.log('Master Items mottagna från backend:', data);
-
       const parsedMeasures: MasterMeasure[] = data.measures || [];
       const parsedDimensions: MasterDimension[] = data.dimensions || [];
 
@@ -255,6 +245,185 @@ export default function App() {
       setError('Kunde inte läsa in Master Items: ' + err.message);
     } finally {
       setItemLoading(false);
+    }
+  };
+
+  // 3. Hämta Fält & Befintliga Synonymer för AI Vocabulary Hub
+  const fetchVocabularyForApp = async (appId: string) => {
+    if (!appId || !apiToken) return;
+    const host = formatTenantHost(tenantInput);
+    setVocabLoading(true);
+    setError(null);
+    setVocabStatusLog(null);
+
+    try {
+      const response = await fetch('/api/vocabulary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'get',
+          tenant: host,
+          apiKey: apiToken.trim(),
+          appId: appId,
+        }),
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `Kunde inte läsa fält (${response.status})`);
+      }
+
+      const data = await response.json();
+      const fields: string[] = data.fields || [];
+      const rawMeasures: any[] = data.measures || [];
+      const existingVocab: any[] = data.existingVocab || [];
+
+      // Skapa lookup för befintliga synonymer
+      const existingMap: Record<string, string[]> = {};
+      existingVocab.forEach((item: any) => {
+        if (item.targetName) {
+          existingMap[item.targetName.toLowerCase()] = item.synonyms || [];
+        }
+      });
+
+      const combinedList: VocabularyItem[] = [
+        ...fields.map(f => ({
+          targetName: f,
+          type: 'field' as const,
+          synonyms: existingMap[f.toLowerCase()] || [],
+        })),
+        ...rawMeasures.map(m => ({
+          targetName: m.title,
+          type: 'measure' as const,
+          synonyms: existingMap[m.title.toLowerCase()] || [],
+        })),
+      ];
+
+      setVocabularyList(combinedList);
+
+    } catch (err: any) {
+      console.error('Vocabulary Fetch Error:', err);
+      setError('Kunde inte läsa in fält från appen: ' + err.message);
+    } finally {
+      setVocabLoading(false);
+    }
+  };
+
+  // Generera AI-synonymer för alla fält och mått
+  const generateAiSynonyms = async () => {
+    if (vocabularyList.length === 0) return;
+    setVocabLoading(true);
+    setError(null);
+
+    try {
+      const itemsToAnalyze = vocabularyList.map(v => ({ name: v.targetName, type: v.type }));
+      const response = await fetch('/api/generate-synonyms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: itemsToAnalyze }),
+      });
+
+      if (!response.ok) throw new Error('Kunde inte generera synonymer');
+
+      const data = await response.json();
+      const suggestions: any[] = data.suggestions || [];
+      const sugMap: Record<string, string[]> = {};
+
+      suggestions.forEach((s: any) => {
+        sugMap[s.targetName] = s.suggestedSynonyms || [];
+      });
+
+      // Slå ihop befintliga synonymer med AI-förslagen
+      const updatedList = vocabularyList.map(item => {
+        const newSugs = sugMap[item.targetName] || [];
+        const uniqueSet = new Set([...item.synonyms, ...newSugs]);
+        return {
+          ...item,
+          synonyms: Array.from(uniqueSet),
+        };
+      });
+
+      setVocabularyList(updatedList);
+      setVocabStatusLog('✨ AI-synonymer genererade och tillagda! Granska listan nedan och klicka på "Publicera till Qlik AI".');
+
+    } catch (err: any) {
+      setError('AI-generering misslyckades: ' + err.message);
+    } finally {
+      setVocabLoading(false);
+    }
+  };
+
+  // Lägg till en synonym manuellt till ett fält
+  const addSynonymToItem = (targetName: string) => {
+    const text = (newSynonymInputs[targetName] || '').trim();
+    if (!text) return;
+
+    setVocabularyList(prev => prev.map(item => {
+      if (item.targetName === targetName && !item.synonyms.includes(text)) {
+        return { ...item, synonyms: [...item.synonyms, text] };
+      }
+      return item;
+    }));
+
+    setNewSynonymInputs(prev => ({ ...prev, [targetName]: '' }));
+  };
+
+  // Ta bort en synonym från ett fält
+  const removeSynonymFromItem = (targetName: string, synToRemove: string) => {
+    setVocabularyList(prev => prev.map(item => {
+      if (item.targetName === targetName) {
+        return { ...item, synonyms: item.synonyms.filter(s => s !== synToRemove) };
+      }
+      return item;
+    }));
+  };
+
+  // Spara & Publicera synonymer direkt till Qlik Cloud Logical Model
+  const saveVocabularyToQlik = async () => {
+    if (!vocabAppId || !apiToken) {
+      setError('Vänligen välj en app att spara affärslogiken till.');
+      return;
+    }
+
+    const host = formatTenantHost(tenantInput);
+    const targetApp = availableApps.find(a => a.id === vocabAppId);
+    setVocabLoading(true);
+    setError(null);
+    setVocabStatusLog('🚀 Sparar affärslogik och synonymer i QIX Engine...');
+
+    try {
+      // Filtrera bara de termer som faktiskt har synonymer definierade
+      const activeVocab = vocabularyList.filter(v => v.synonyms.length > 0);
+
+      const response = await fetch('/api/vocabulary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save',
+          tenant: host,
+          apiKey: apiToken.trim(),
+          appId: vocabAppId,
+          vocabulary: activeVocab,
+        }),
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `Serverfel (${response.status})`);
+      }
+
+      const resData = await response.json();
+      setVocabStatusLog(
+        `✅ Affärslogik sparad och aktiverad i "${targetApp?.name}"!\n` +
+        `• Totalt ${resData.count} termer med synonymer har publicerats till Qlik AI (Insight Advisor).`
+      );
+
+    } catch (err: any) {
+      console.error('Save Vocab Error:', err);
+      setError('Kunde inte spara affärslogiken: ' + err.message);
+      setVocabStatusLog(null);
+    } finally {
+      setVocabLoading(false);
     }
   };
 
@@ -273,31 +442,16 @@ export default function App() {
     }
   }, [sourceAppId]);
 
-  // Exportera till JSON
-  const exportToJson = () => {
-    const selectedMeasuresList = measures.filter(m => selectedMeasureIds.includes(m.id));
-    const selectedDimensionsList = dimensions.filter(d => selectedDimensionIds.includes(d.id));
-    const sourceApp = availableApps.find(a => a.id === sourceAppId);
+  useEffect(() => {
+    if (vocabAppId) {
+      fetchVocabularyForApp(vocabAppId);
+    } else {
+      setVocabularyList([]);
+    }
+  }, [vocabAppId]);
 
-    const exportPackage = {
-      sourceAppId,
-      sourceAppName: sourceApp?.name || 'Qlik App',
-      exportedAt: new Date().toISOString(),
-      measures: selectedMeasuresList,
-      dimensions: selectedDimensionsList,
-    };
-
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportPackage, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", `master_items_${sourceApp?.name ? sourceApp.name.toLowerCase().replace(/\s+/g, '_') : 'export'}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-  };
-
-  // Synkronisera till mål-app
-  const handleSync = async () => {
+  // Synka Master Items
+  const handleSyncMasterItems = async () => {
     if (!targetAppId || !apiToken) {
       setError('Vänligen välj en Mål-app (Target App) att distribuera till.');
       return;
@@ -349,12 +503,45 @@ export default function App() {
     }
   };
 
+  // Exportera Master Items till JSON
+  const exportMasterItemsToJson = () => {
+    const selectedMeasuresList = measures.filter(m => selectedMeasureIds.includes(m.id));
+    const selectedDimensionsList = dimensions.filter(d => selectedDimensionIds.includes(d.id));
+    const sourceApp = availableApps.find(a => a.id === sourceAppId);
+
+    const exportPackage = {
+      sourceAppId,
+      sourceAppName: sourceApp?.name || 'Qlik App',
+      exportedAt: new Date().toISOString(),
+      measures: selectedMeasuresList,
+      dimensions: selectedDimensionsList,
+    };
+
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportPackage, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `master_items_${sourceApp?.name ? sourceApp.name.toLowerCase().replace(/\s+/g, '_') : 'export'}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
+  // Filtreringar
   const filteredSourceApps = availableApps.filter(app => 
     app.name.toLowerCase().includes(sourceAppSearch.toLowerCase())
   );
 
   const filteredTargetApps = availableApps.filter(app => 
     app.id !== sourceAppId && app.name.toLowerCase().includes(targetAppSearch.toLowerCase())
+  );
+
+  const filteredVocabApps = availableApps.filter(app => 
+    app.name.toLowerCase().includes(vocabAppSearch.toLowerCase())
+  );
+
+  const filteredVocabularyList = vocabularyList.filter(item => 
+    item.targetName.toLowerCase().includes(vocabSearchQuery.toLowerCase()) ||
+    item.synonyms.some(s => s.toLowerCase().includes(vocabSearchQuery.toLowerCase()))
   );
 
   const filteredMeasures = measures.filter(m => 
@@ -402,7 +589,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">Qlik Cloud Admin Toolbox</h1>
-              <p className="text-sm text-slate-400">Övervakning och Master Item-distribution</p>
+              <p className="text-sm text-slate-400">Övervakning, Master Items och AI-vokabulär</p>
             </div>
           </div>
 
@@ -425,8 +612,19 @@ export default function App() {
           </div>
         </div>
 
-        {/* Flikar */}
+        {/* Flik-navigering */}
         <div className="flex border-b border-slate-800 space-x-2">
+          <button
+            onClick={() => setActiveTab('vocabulary')}
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+              activeTab === 'vocabulary'
+                ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-emerald-400" />
+            AI Vocabulary Hub
+          </button>
           <button
             onClick={() => setActiveTab('master-items')}
             className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
@@ -501,7 +699,176 @@ export default function App() {
           </div>
         )}
 
-        {/* FLIK 1: MASTER ITEM DISTRIBUTOR */}
+        {/* ============================================================ */}
+        {/* FLIK 1: AI VOCABULARY & BUSINESS LOGIC HUB */}
+        {/* ============================================================ */}
+        {activeTab === 'vocabulary' && (
+          <div className="space-y-6">
+            
+            {/* App-val och Handlingsknappar */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex-1">
+                  <label className="text-xs font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-2 mb-2">
+                    <BookOpen className="w-4 h-4" /> Välj app för affärslogik & AI-träning
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                      <input
+                        type="text"
+                        placeholder="Filtrera appar (A–Ö)..."
+                        value={vocabAppSearch}
+                        onChange={(e) => setVocabAppSearch(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <select
+                      value={vocabAppId}
+                      onChange={(e) => setVocabAppId(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    >
+                      <option value="">-- Välj app ({filteredVocabApps.length} st) --</option>
+                      {filteredVocabApps.map((app) => (
+                        <option key={app.id} value={app.id}>
+                          {app.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-4 md:pt-0">
+                  <button
+                    onClick={generateAiSynonyms}
+                    disabled={!vocabAppId || vocabularyList.length === 0 || vocabLoading}
+                    className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 px-4 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow-lg cursor-pointer"
+                  >
+                    <Sparkles className="w-4 h-4" /> Generera AI-synonymer
+                  </button>
+                  <button
+                    onClick={saveVocabularyToQlik}
+                    disabled={!vocabAppId || vocabularyList.length === 0 || vocabLoading}
+                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 px-4 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow cursor-pointer"
+                  >
+                    <Database className="w-4 h-4 text-emerald-400" /> Publicera till Qlik AI
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                {vocabLoading ? 'Läser in fält och affärslogik via motorn...' : vocabAppId ? `Inläst: ${vocabularyList.length} fält och mått` : 'Välj en app för att läsa in dess fält och koppla synonymer för Qliks AI.'}
+              </p>
+            </div>
+
+            {/* Statuslogg för Vokabulär */}
+            {vocabStatusLog && (
+              <div className="bg-emerald-950/30 border border-emerald-800/60 rounded-2xl p-5 text-emerald-300 text-xs whitespace-pre-line font-mono">
+                {vocabStatusLog}
+              </div>
+            )}
+
+            {/* Lista över fält och synonymer */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+              <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold text-white">Fält och Synonymer (Business Logic)</h2>
+                  <p className="text-xs text-slate-400">Synonymer gör att Insight Advisor förstår naturligt språk</p>
+                </div>
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Sök fält eller synonym..."
+                    value={vocabSearchQuery}
+                    onChange={(e) => setVocabSearchQuery(e.target.value)}
+                    className="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {!vocabAppId ? (
+                <div className="p-12 text-center text-slate-500 text-sm">
+                  Vänligen välj en app ovan för att visa dess fält och synonymer.
+                </div>
+              ) : vocabLoading ? (
+                <div className="p-12 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                  Hämtar appens datastruktur och affärslogik från QIX Engine...
+                </div>
+              ) : filteredVocabularyList.length === 0 ? (
+                <div className="p-12 text-center text-slate-500 text-sm">
+                  Inga fält matchar sökningen.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-800/60">
+                  {filteredVocabularyList.map((item) => (
+                    <div key={item.targetName} className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/30 transition">
+                      
+                      {/* Vänster: Fältnamn & Typ */}
+                      <div className="min-w-0 md:w-1/3">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold ${
+                            item.type === 'measure'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'
+                          }`}>
+                            {item.type === 'measure' ? 'MÅTT' : 'FÄLT'}
+                          </span>
+                          <span className="font-semibold text-white text-sm truncate">{item.targetName}</span>
+                        </div>
+                      </div>
+
+                      {/* Mitten: Synonymer (Badges) */}
+                      <div className="flex-1 flex flex-wrap items-center gap-2">
+                        {item.synonyms.map((syn) => (
+                          <span
+                            key={syn}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-800 text-slate-200 rounded-full text-xs border border-slate-700 shadow-sm"
+                          >
+                            <span>{syn}</span>
+                            <button
+                              onClick={() => removeSynonymFromItem(item.targetName, syn)}
+                              className="text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+
+                        {/* Lägg till ny synonym direkt i raden */}
+                        <div className="inline-flex items-center gap-1">
+                          <input
+                            type="text"
+                            placeholder="+ Lägg till synonym..."
+                            value={newSynonymInputs[item.targetName] || ''}
+                            onChange={(e) => setNewSynonymInputs(prev => ({ ...prev, [item.targetName]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') addSynonymToItem(item.targetName);
+                            }}
+                            className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500 w-36"
+                          />
+                          <button
+                            onClick={() => addSynonymToItem(item.targetName)}
+                            className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 rounded-lg border border-slate-700 transition cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* ============================================================ */}
+        {/* FLIK 2: MASTER ITEM DISTRIBUTOR */}
+        {/* ============================================================ */}
         {activeTab === 'master-items' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -632,14 +999,14 @@ export default function App() {
 
               <div className="flex items-center gap-3">
                 <button
-                  onClick={exportToJson}
+                  onClick={exportMasterItemsToJson}
                   disabled={!sourceAppId || (selectedMeasureIds.length === 0 && selectedDimensionIds.length === 0)}
                   className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl text-xs font-semibold border border-slate-700 transition disabled:opacity-40 cursor-pointer"
                 >
                   <Download className="w-4 h-4 text-emerald-400" /> Exportera till JSON
                 </button>
                 <button
-                  onClick={handleSync}
+                  onClick={handleSyncMasterItems}
                   disabled={!targetAppId || (selectedMeasureIds.length === 0 && selectedDimensionIds.length === 0)}
                   className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-5 py-2 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow-lg cursor-pointer"
                 >
@@ -813,7 +1180,9 @@ export default function App() {
           </div>
         )}
 
-        {/* FLIK 2: RELOAD MONITOR */}
+        {/* ============================================================ */}
+        {/* FLIK 3: RELOAD MONITOR */}
+        {/* ============================================================ */}
         {activeTab === 'reloads' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
