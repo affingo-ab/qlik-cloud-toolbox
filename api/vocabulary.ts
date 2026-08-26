@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import WebSocket from 'ws';
+import crypto from 'crypto';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -49,56 +50,81 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       ws.on('open', async () => {
         try {
-          // Öppna app (noData = false om vi ska spara, true om vi bara läser)
-          const isSaveAction = action === 'save';
-          const openRes = await send('OpenDoc', -1, [appId, '', '', '', !isSaveAction]);
+          // Öppna alltid i standardläge
+          const openRes = await send('OpenDoc', -1, [appId, '', '', '', false]);
           if (openRes.error) {
             throw new Error(openRes.error.message || 'Kunde inte öppna app');
           }
           const docHandle = openRes.result?.qReturn?.qHandle || 1;
 
           // ==========================================
-          // LÄSA IN FÄLT, MÅTT OCH LOGICAL MODEL
+          // 1. LÄSA IN DIMENSIONER, MÅTT OCH FÄLT
           // ==========================================
           if (action === 'get') {
-            // 1. Hämta alla fält från appen
-            const fieldListObj = await send('CreateSessionObject', docHandle, [{
-              qInfo: { qType: 'FieldList' },
-              qFieldListDef: { qType: 'field', qData: { name: '/qName' } }
+            // A. Master Dimensions
+            let dimensions: any[] = [];
+            const dListObj = await send('CreateSessionObject', docHandle, [{
+              qInfo: { qType: 'DimensionList' },
+              qDimensionListDef: {
+                qType: 'dimension',
+                qData: { title: '/qMetaDef/title', dim: '/qDim' },
+              },
             }]);
-            let fields: string[] = [];
-            if (fieldListObj.result?.qReturn?.qHandle) {
-              const fLayout = await send('GetLayout', fieldListObj.result.qReturn.qHandle, []);
-              const rawFields = fLayout.result?.qLayout?.qFieldList?.qItems || [];
-              fields = rawFields
-                .map((f: any) => f.qName || f.qMeta?.title)
-                .filter((name: string) => name && !name.startsWith('$')); // Filtrera bort systemfält
+            if (dListObj.result?.qReturn?.qHandle) {
+              const dLayout = await send('GetLayout', dListObj.result.qReturn.qHandle, []);
+              const rawDims = dLayout.result?.qLayout?.qDimensionList?.qItems || [];
+              dimensions = rawDims.map((d: any) => ({
+                id: d.qInfo?.qId,
+                title: d.qMeta?.title || d.qData?.title || 'Dimension',
+                fieldDefs: d.qData?.dim?.qFieldDefs || [],
+              }));
             }
 
-            // 2. Hämta Master Measures
-            const measureListObj = await send('CreateSessionObject', docHandle, [{
-              qInfo: { qType: 'MeasureList' },
-              qMeasureListDef: { qType: 'measure', qData: { title: '/qMetaDef/title', expression: '/qMeasure/qDef' } }
-            }]);
+            // B. Master Measures
             let measures: any[] = [];
-            if (measureListObj.result?.qReturn?.qHandle) {
-              const mLayout = await send('GetLayout', measureListObj.result.qReturn.qHandle, []);
+            const mListObj = await send('CreateSessionObject', docHandle, [{
+              qInfo: { qType: 'MeasureList' },
+              qMeasureListDef: {
+                qType: 'measure',
+                qData: { title: '/qMetaDef/title', measure: '/qMeasure' },
+              },
+            }]);
+            if (mListObj.result?.qReturn?.qHandle) {
+              const mLayout = await send('GetLayout', mListObj.result.qReturn.qHandle, []);
               const rawMeasures = mLayout.result?.qLayout?.qMeasureList?.qItems || [];
               measures = rawMeasures.map((m: any) => ({
                 id: m.qInfo?.qId,
                 title: m.qMeta?.title || m.qData?.title || 'Mått',
-                expression: m.qData?.expression || '',
+                expression: m.qData?.measure?.qDef || m.qData?.expression || '',
               }));
             }
 
-            // 3. Försök läsa befintlig Logical Model om det finns
+            // C. Fält från datamodellen
+            let fields: string[] = [];
+            try {
+              const fieldListObj = await send('CreateSessionObject', docHandle, [{
+                qInfo: { qType: 'FieldList' },
+                qFieldListDef: { qShowSystem: false, qShowHidden: false },
+              }]);
+              if (fieldListObj.result?.qReturn?.qHandle) {
+                const fLayout = await send('GetLayout', fieldListObj.result.qReturn.qHandle, []);
+                const rawFields = fLayout.result?.qLayout?.qFieldList?.qItems || [];
+                fields = rawFields
+                  .map((f: any) => f.qName)
+                  .filter((name: string) => name && !name.startsWith('$') && !name.startsWith('='));
+              }
+            } catch {}
+
+            // D. Läs befintliga synonymer
             let existingVocab: any[] = [];
             try {
               const logicalModelRes = await send('GetLogicalModel', docHandle, []);
+              console.log('Befintlig Logical Model från Qlik:', JSON.stringify(logicalModelRes.result?.qLogicalModel, null, 2));
+
               if (logicalModelRes.result?.qLogicalModel) {
                 const terms = logicalModelRes.result.qLogicalModel.qVocabulary?.qTerms || [];
                 existingVocab = terms.map((t: any) => ({
-                  targetName: t.qName || t.qDefinition?.qName,
+                  targetName: t.qDefinition?.qName || t.qName || t.qText,
                   synonyms: t.qSynonyms || [],
                 }));
               }
@@ -106,21 +132,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
             clearTimeout(timeout);
             ws.close();
-            return resolve({ fields, measures, existingVocab });
+            return resolve({ dimensions, measures, fields, existingVocab });
           }
 
           // ==========================================
-          // SPARA LOGICAL MODEL (SYNONYMER)
+          // 2. SPARA LOGICAL MODEL (SYNONYMER)
           // ==========================================
           if (action === 'save') {
-            // Skapa term-struktur för Qlik QIX Engine
-            const qTerms = vocabulary.map((item: any) => ({
-              qName: item.targetName,
-              qSynonyms: Array.isArray(item.synonyms) ? item.synonyms : [],
-            }));
-
-            // Hämta eller skapa bas-LogicalModel
-            let currentModel: any = { qVocabulary: { qTerms: [] } };
+            // Hämta befintlig modell som bas
+            let currentModel: any = {};
             try {
               const getRes = await send('GetLogicalModel', docHandle, []);
               if (getRes.result?.qLogicalModel) {
@@ -128,13 +148,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
             } catch {}
 
-            currentModel.qVocabulary = {
-              ...(currentModel.qVocabulary || {}),
-              qTerms: qTerms,
+            // Skapa term-struktur med qDefinition och GUID:s
+            const qTerms = vocabulary.map((item: any) => {
+              const termId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
+              const typeStr = item.type === 'measure' ? 'Measure' : item.type === 'dimension' ? 'Dimension' : 'Field';
+
+              return {
+                qId: termId,
+                qName: item.targetName,
+                qText: item.targetName,
+                qDefinition: {
+                  qType: typeStr,
+                  qName: item.targetName,
+                  qFieldName: item.targetName,
+                },
+                qSynonyms: Array.isArray(item.synonyms) ? item.synonyms : [],
+              };
+            });
+
+            // VIKTIGT: Aktivera Custom Business Logic och sätt qVocabulary
+            const updatedModel = {
+              ...currentModel,
+              qCustomBusinessLogicEnabled: true,
+              qVocabulary: {
+                ...(currentModel.qVocabulary || {}),
+                qTerms: qTerms,
+              },
             };
 
-            // Applicera och spara
-            await send('SetLogicalModel', docHandle, [currentModel]);
+            console.log('Skickar uppdaterad Logical Model till QIX:', JSON.stringify(updatedModel, null, 2));
+
+            const setRes = await send('SetLogicalModel', docHandle, [updatedModel]);
+            if (setRes.error) {
+              throw new Error(setRes.error.message || 'Kunde inte sätta Logical Model');
+            }
+
+            // Spara permanent i appen
             await send('DoSave', docHandle, []);
 
             clearTimeout(timeout);
@@ -142,7 +191,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             return resolve({ success: true, count: qTerms.length });
           }
 
-          throw new Error('Ogiltig åtgärd (action)');
+          throw new Error('Ogiltig åtgärd');
 
         } catch (err) {
           clearTimeout(timeout);

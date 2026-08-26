@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen
+  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen, FileSpreadsheet
 } from 'lucide-react';
 
 interface ReloadItem {
@@ -39,14 +40,14 @@ interface MasterDimension {
 
 interface VocabularyItem {
   targetName: string;
-  type: 'field' | 'measure';
+  type: 'dimension' | 'measure' | 'field';
   synonyms: string[];
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'master-items' | 'vocabulary' | 'reloads'>('vocabulary');
+  const [activeTab, setActiveTab] = useState<'vocabulary' | 'master-items' | 'reloads'>('vocabulary');
 
-  // Anslutningsinställningar
+  // Anslutningsinställningar (Admin API Token)
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('qlik_api_token') || '');
   const [webIntegrationId, setWebIntegrationId] = useState(() => localStorage.getItem('qlik_web_int_id') || '');
@@ -248,7 +249,7 @@ export default function App() {
     }
   };
 
-  // 3. Hämta Fält & Befintliga Synonymer för AI Vocabulary Hub
+  // 3. Hämta Fält, Dimensioner och Mått för AI Vocabulary Hub
   const fetchVocabularyForApp = async (appId: string) => {
     if (!appId || !apiToken) return;
     const host = formatTenantHost(tenantInput);
@@ -274,11 +275,11 @@ export default function App() {
       }
 
       const data = await response.json();
-      const fields: string[] = data.fields || [];
+      const rawDimensions: any[] = data.dimensions || [];
       const rawMeasures: any[] = data.measures || [];
+      const rawFields: string[] = data.fields || [];
       const existingVocab: any[] = data.existingVocab || [];
 
-      // Skapa lookup för befintliga synonymer
       const existingMap: Record<string, string[]> = {};
       existingVocab.forEach((item: any) => {
         if (item.targetName) {
@@ -287,16 +288,23 @@ export default function App() {
       });
 
       const combinedList: VocabularyItem[] = [
-        ...fields.map(f => ({
-          targetName: f,
-          type: 'field' as const,
-          synonyms: existingMap[f.toLowerCase()] || [],
+        ...rawDimensions.map(d => ({
+          targetName: d.title,
+          type: 'dimension' as const,
+          synonyms: existingMap[d.title.toLowerCase()] || [],
         })),
         ...rawMeasures.map(m => ({
           targetName: m.title,
           type: 'measure' as const,
           synonyms: existingMap[m.title.toLowerCase()] || [],
         })),
+        ...rawFields
+          .filter(f => !rawDimensions.some(d => d.title.toLowerCase() === f.toLowerCase()))
+          .map(f => ({
+            targetName: f,
+            type: 'field' as const,
+            synonyms: existingMap[f.toLowerCase()] || [],
+          })),
       ];
 
       setVocabularyList(combinedList);
@@ -309,7 +317,7 @@ export default function App() {
     }
   };
 
-  // Generera AI-synonymer för alla fält och mått
+  // 4. Generera AI-synonymer
   const generateAiSynonyms = async () => {
     if (vocabularyList.length === 0) return;
     setVocabLoading(true);
@@ -333,7 +341,6 @@ export default function App() {
         sugMap[s.targetName] = s.suggestedSynonyms || [];
       });
 
-      // Slå ihop befintliga synonymer med AI-förslagen
       const updatedList = vocabularyList.map(item => {
         const newSugs = sugMap[item.targetName] || [];
         const uniqueSet = new Set([...item.synonyms, ...newSugs]);
@@ -344,7 +351,7 @@ export default function App() {
       });
 
       setVocabularyList(updatedList);
-      setVocabStatusLog('✨ AI-synonymer genererade och tillagda! Granska listan nedan och klicka på "Publicera till Qlik AI".');
+      setVocabStatusLog('✨ AI-synonymer genererade och tillagda! Klicka på "Exportera Qlik AI Excel (.xlsx)" för att ladda ner importfilen.');
 
     } catch (err: any) {
       setError('AI-generering misslyckades: ' + err.message);
@@ -353,7 +360,7 @@ export default function App() {
     }
   };
 
-  // Lägg till en synonym manuellt till ett fält
+  // Lägg till synonym manuellt
   const addSynonymToItem = (targetName: string) => {
     const text = (newSynonymInputs[targetName] || '').trim();
     if (!text) return;
@@ -368,7 +375,7 @@ export default function App() {
     setNewSynonymInputs(prev => ({ ...prev, [targetName]: '' }));
   };
 
-  // Ta bort en synonym från ett fält
+  // Ta bort synonym
   const removeSynonymFromItem = (targetName: string, synToRemove: string) => {
     setVocabularyList(prev => prev.map(item => {
       if (item.targetName === targetName) {
@@ -378,53 +385,40 @@ export default function App() {
     }));
   };
 
-  // Spara & Publicera synonymer direkt till Qlik Cloud Logical Model
-  const saveVocabularyToQlik = async () => {
-    if (!vocabAppId || !apiToken) {
-      setError('Vänligen välj en app att spara affärslogiken till.');
+  // 5. Exportera Qlik-kompatibel Excel-fil (.xlsx)
+  const exportVocabularyToExcel = () => {
+    const targetApp = availableApps.find(a => a.id === vocabAppId);
+    const activeVocab = vocabularyList.filter(v => v.synonyms.length > 0);
+
+    if (activeVocab.length === 0) {
+      setError('Inga synonymer att exportera. Generera AI-synonymer eller lägg till manuellt först.');
       return;
     }
 
-    const host = formatTenantHost(tenantInput);
-    const targetApp = availableApps.find(a => a.id === vocabAppId);
-    setVocabLoading(true);
-    setError(null);
-    setVocabStatusLog('🚀 Sparar affärslogik och synonymer i QIX Engine...');
+    // Bygg exakt tabellstruktur för Qlik Sense Vocabulary Import
+    const excelRows = activeVocab.map(item => ({
+      'Field': item.targetName,
+      'Locale': 'sv',
+      'Terms': item.synonyms.join(', '),
+      'Condition Type': '',
+      'Condition Value': '',
+      'Master Item': item.type === 'measure' || item.type === 'dimension' ? 'TRUE' : 'FALSE',
+    }));
 
-    try {
-      // Filtrera bara de termer som faktiskt har synonymer definierade
-      const activeVocab = vocabularyList.filter(v => v.synonyms.length > 0);
+    const worksheet = XLSX.utils.json_to_sheet(excelRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Vocabulary');
 
-      const response = await fetch('/api/vocabulary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'save',
-          tenant: host,
-          apiKey: apiToken.trim(),
-          appId: vocabAppId,
-          vocabulary: activeVocab,
-        }),
-      });
+    const fileName = `qlik_vocabulary_${targetApp?.name ? targetApp.name.toLowerCase().replace(/\s+/g, '_') : 'export'}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
 
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `Serverfel (${response.status})`);
-      }
-
-      const resData = await response.json();
-      setVocabStatusLog(
-        `✅ Affärslogik sparad och aktiverad i "${targetApp?.name}"!\n` +
-        `• Totalt ${resData.count} termer med synonymer har publicerats till Qlik AI (Insight Advisor).`
-      );
-
-    } catch (err: any) {
-      console.error('Save Vocab Error:', err);
-      setError('Kunde inte spara affärslogiken: ' + err.message);
-      setVocabStatusLog(null);
-    } finally {
-      setVocabLoading(false);
-    }
+    setVocabStatusLog(
+      `📥 Excel-fil "${fileName}" har laddats ner!\n` +
+      `• Innehåller ${excelRows.length} st fält och mått med fulla synonymer.\n\n` +
+      `💡 Så här importerar du den i Qlik Sense:\n` +
+      `1. Öppna appen i Qlik Sense Hub ➔ Prepare ➔ Business logic ➔ Vocabulary.\n` +
+      `2. Klicka på "Import" (Importera) och välj din nedladdade Excel-fil ➔ Klart!`
+    );
   };
 
   useEffect(() => {
@@ -612,7 +606,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Flik-navigering */}
+        {/* Flikar */}
         <div className="flex border-b border-slate-800 space-x-2">
           <button
             onClick={() => setActiveTab('vocabulary')}
@@ -747,17 +741,17 @@ export default function App() {
                     <Sparkles className="w-4 h-4" /> Generera AI-synonymer
                   </button>
                   <button
-                    onClick={saveVocabularyToQlik}
+                    onClick={exportVocabularyToExcel}
                     disabled={!vocabAppId || vocabularyList.length === 0 || vocabLoading}
-                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 px-4 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow cursor-pointer"
+                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow cursor-pointer"
                   >
-                    <Database className="w-4 h-4 text-emerald-400" /> Publicera till Qlik AI
+                    <FileSpreadsheet className="w-4 h-4" /> Exportera Qlik AI Excel (.xlsx)
                   </button>
                 </div>
               </div>
 
               <p className="text-xs text-slate-500">
-                {vocabLoading ? 'Läser in fält och affärslogik via motorn...' : vocabAppId ? `Inläst: ${vocabularyList.length} fält och mått` : 'Välj en app för att läsa in dess fält och koppla synonymer för Qliks AI.'}
+                {vocabLoading ? 'Läser in fält och affärslogik via motorn...' : vocabAppId ? `Inläst: ${vocabularyList.length} fält, mått och dimensioner` : 'Välj en app för att läsa in dess fält och koppla synonymer för Qliks AI.'}
               </p>
             </div>
 
@@ -808,12 +802,14 @@ export default function App() {
                       {/* Vänster: Fältnamn & Typ */}
                       <div className="min-w-0 md:w-1/3">
                         <div className="flex items-center gap-2">
-                          <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold ${
-                            item.type === 'measure'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold uppercase tracking-wider ${
+                            item.type === 'dimension'
+                              ? 'bg-sky-500/10 text-sky-400 border border-sky-500/30'
+                              : item.type === 'measure'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-purple-500/10 text-purple-400 border border-purple-500/30'
                           }`}>
-                            {item.type === 'measure' ? 'MÅTT' : 'FÄLT'}
+                            {item.type === 'dimension' ? 'DIMENSION' : item.type === 'measure' ? 'MÅTT' : 'FÄLT'}
                           </span>
                           <span className="font-semibold text-white text-sm truncate">{item.targetName}</span>
                         </div>
