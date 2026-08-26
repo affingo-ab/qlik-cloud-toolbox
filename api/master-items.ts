@@ -33,118 +33,78 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const timeout = setTimeout(() => {
         try { ws.close(); } catch {}
-        reject(new Error('Timeout mot QIX Engine efter 10 sekunder'));
-      }, 10000);
+        reject(new Error('Timeout mot QIX Engine efter 15 sekunder'));
+      }, 15000);
 
-      let docHandle = -1;
-      let parsedMeasures: any[] = [];
-      let parsedDimensions: any[] = [];
+      let msgId = 1;
+      const pendingCallbacks: Record<number, (msg: any) => void> = {};
 
-      ws.on('open', () => {
-        ws.send(JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'OpenDoc',
-          handle: -1,
-          params: [appId, '', '', '', true], // noData = true för snabb läsning
-        }));
-      });
+      const send = (method: string, handle: number, params: any[]): Promise<any> => {
+        return new Promise((res) => {
+          const id = ++msgId;
+          pendingCallbacks[id] = res;
+          ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, handle, params }));
+        });
+      };
 
-      ws.on('message', (data: any) => {
+      ws.on('open', async () => {
         try {
-          const msg = JSON.parse(data.toString());
-
-          // 1. OpenDoc
-          if (msg.id === 1) {
-            if (msg.error) {
-              clearTimeout(timeout);
-              ws.close();
-              return reject(new Error(msg.error.message || 'Kunde inte öppna app'));
-            }
-            docHandle = msg.result?.qReturn?.qHandle || 1;
-
-            // 2. Skapa MeasureList med fullt qMeasure-objekt
-            ws.send(JSON.stringify({
-              jsonrpc: '2.0',
-              id: 2,
-              method: 'CreateSessionObject',
-              handle: docHandle,
-              params: [{
-                qInfo: { qType: 'MeasureList' },
-                qMeasureListDef: {
-                  qType: 'measure',
-                  qData: {
-                    title: '/qMetaDef/title',
-                    description: '/qMetaDef/description',
-                    tags: '/qMetaDef/tags',
-                    measure: '/qMeasure',
-                  },
-                },
-              }],
-            }));
-
-            // 3. Skapa DimensionList med fullt qDim-objekt (innehåller qFieldDefs array)
-            ws.send(JSON.stringify({
-              jsonrpc: '2.0',
-              id: 3,
-              method: 'CreateSessionObject',
-              handle: docHandle,
-              params: [{
-                qInfo: { qType: 'DimensionList' },
-                qDimensionListDef: {
-                  qType: 'dimension',
-                  qData: {
-                    title: '/qMetaDef/title',
-                    description: '/qMetaDef/description',
-                    tags: '/qMetaDef/tags',
-                    dim: '/qDim',
-                  },
-                },
-              }],
-            }));
+          // 1. Öppna käll-appen i snabbläge
+          const openRes = await send('OpenDoc', -1, [appId, '', '', '', true]);
+          if (openRes.error) {
+            throw new Error(openRes.error.message || 'Kunde inte öppna app');
           }
+          const docHandle = openRes.result?.qReturn?.qHandle || 1;
 
-          // Hämta Measure Layout
-          if (msg.id === 2 && msg.result?.qReturn?.qHandle) {
-            ws.send(JSON.stringify({
-              jsonrpc: '2.0',
-              id: 20,
-              method: 'GetLayout',
-              handle: msg.result.qReturn.qHandle,
-              params: [],
-            }));
-          }
+          // 2. Hämta Mått (Measures) garanterat först
+          let parsedMeasures: any[] = [];
+          const mListObj = await send('CreateSessionObject', docHandle, [{
+            qInfo: { qType: 'MeasureList' },
+            qMeasureListDef: {
+              qType: 'measure',
+              qData: {
+                title: '/qMetaDef/title',
+                description: '/qMetaDef/description',
+                tags: '/qMetaDef/tags',
+                expression: '/qMeasure/qDef',
+                measure: '/qMeasure',
+              },
+            },
+          }]);
 
-          // Hämta Dimension Layout
-          if (msg.id === 3 && msg.result?.qReturn?.qHandle) {
-            ws.send(JSON.stringify({
-              jsonrpc: '2.0',
-              id: 30,
-              method: 'GetLayout',
-              handle: msg.result.qReturn.qHandle,
-              params: [],
-            }));
-          }
-
-          // Mått
-          if (msg.id === 20 && msg.result?.qLayout) {
-            const rawItems = msg.result.qLayout.qMeasureList?.qItems || [];
-            parsedMeasures = rawItems.map((m: any) => ({
+          if (mListObj.result?.qReturn?.qHandle) {
+            const mLayout = await send('GetLayout', mListObj.result.qReturn.qHandle, []);
+            const rawMeasures = mLayout.result?.qLayout?.qMeasureList?.qItems || [];
+            parsedMeasures = rawMeasures.map((m: any) => ({
               id: m.qInfo?.qId || Math.random().toString(),
               title: m.qMeta?.title || m.qData?.title || 'Mått',
               description: m.qMeta?.description || m.qData?.description || '',
-              expression: m.qData?.measure?.qDef || m.qData?.expression || '',
+              expression: m.qData?.expression || m.qData?.measure?.qDef || '',
               tags: m.qMeta?.tags || m.qData?.tags || [],
             }));
           }
 
-          // Dimensioner med fulla fältdefinitioner
-          if (msg.id === 30 && msg.result?.qLayout) {
-            const rawItems = msg.result.qLayout.qDimensionList?.qItems || [];
-            parsedDimensions = rawItems.map((d: any) => {
+          // 3. Hämta Dimensioner (Dimensions) därefter
+          let parsedDimensions: any[] = [];
+          const dListObj = await send('CreateSessionObject', docHandle, [{
+            qInfo: { qType: 'DimensionList' },
+            qDimensionListDef: {
+              qType: 'dimension',
+              qData: {
+                title: '/qMetaDef/title',
+                description: '/qMetaDef/description',
+                tags: '/qMetaDef/tags',
+                dim: '/qDim',
+              },
+            },
+          }]);
+
+          if (dListObj.result?.qReturn?.qHandle) {
+            const dLayout = await send('GetLayout', dListObj.result.qReturn.qHandle, []);
+            const rawDimensions = dLayout.result?.qLayout?.qDimensionList?.qItems || [];
+            parsedDimensions = rawDimensions.map((d: any) => {
               const dimObj = d.qData?.dim || {};
               const fieldDefs = Array.isArray(dimObj.qFieldDefs) ? dimObj.qFieldDefs : [];
-
               return {
                 id: d.qInfo?.qId || Math.random().toString(),
                 title: d.qMeta?.title || d.qData?.title || 'Dimension',
@@ -154,17 +114,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 tags: d.qMeta?.tags || d.qData?.tags || [],
               };
             });
-
-            clearTimeout(timeout);
-            ws.close();
-            resolve({ measures: parsedMeasures, dimensions: parsedDimensions });
           }
+
+          // 4. Klart! Både mått och dimensioner är garanterat inlästa
+          clearTimeout(timeout);
+          ws.close();
+          resolve({ measures: parsedMeasures, dimensions: parsedDimensions });
 
         } catch (err) {
           clearTimeout(timeout);
           ws.close();
           reject(err);
         }
+      });
+
+      ws.on('message', (data: any) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.id && pendingCallbacks[msg.id]) {
+            pendingCallbacks[msg.id](msg);
+            delete pendingCallbacks[msg.id];
+          }
+        } catch {}
       });
 
       ws.on('error', (err) => {
