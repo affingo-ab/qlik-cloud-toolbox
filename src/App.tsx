@@ -110,7 +110,7 @@ export default function App() {
     return headers;
   };
 
-  // 1. Hämta appar och reloads (Admin-nivå)
+  // 1. Hämta appar och reloads
   const fetchInitialData = async () => {
     const host = formatTenantHost(tenantInput);
     if (!host || !apiToken) {
@@ -126,39 +126,63 @@ export default function App() {
       const headers = getHeaders();
       const appsMap: Record<string, AppInfo> = {};
 
-      // A. Hämta appar
+      // A. Hämta appar med paginering
       let nextUrl: string | null = `https://${host}/api/v1/items?resourceType=app&limit=100`;
       let pageCount = 0;
 
       while (nextUrl && pageCount < 10) {
         pageCount++;
-        const itemsRes = await fetch(nextUrl, { headers }).catch(() => null);
-        if (!itemsRes || !itemsRes.ok) break;
+        try {
+          const itemsRes = await fetch(nextUrl, { headers });
+          if (!itemsRes.ok) break;
 
-        const itemsData = await itemsRes.json();
-        const items = itemsData.data || [];
-        
-        items.forEach((item: any) => {
-          const id = item.resourceId || item.id;
-          const name = item.name || item.resourceAttributes?.name;
-          if (id && name) {
-            appsMap[id] = { id, name, spaceId: item.spaceId };
+          const itemsData: any = await itemsRes.json();
+          const items: any[] = itemsData.data || [];
+          
+          items.forEach((item: any) => {
+            const id = item.resourceId || item.id;
+            const name = item.name || item.resourceAttributes?.name;
+            if (id && name) {
+              appsMap[id] = { id, name, spaceId: item.spaceId };
+            }
+          });
+
+          nextUrl = itemsData.links?.next?.href || null;
+          if (nextUrl && !nextUrl.startsWith('http')) {
+            nextUrl = `https://${host}${nextUrl}`;
           }
-        });
-
-        nextUrl = itemsData.links?.next?.href || null;
-        if (nextUrl && !nextUrl.startsWith('http')) {
-          nextUrl = `https://${host}${nextUrl}`;
+        } catch {
+          break;
         }
+      }
+
+      // Fallback till /api/v1/apps om items inte gav något
+      if (Object.keys(appsMap).length === 0) {
+        try {
+          const appsRes = await fetch(`https://${host}/api/v1/apps?limit=100`, { headers });
+          if (appsRes.ok) {
+            const appsData: any = await appsRes.json();
+            const appList: any[] = appsData.data || appsData || [];
+            if (Array.isArray(appList)) {
+              appList.forEach((item: any) => {
+                const id = item.id || item.resourceId;
+                const name = item.attributes?.name || item.name;
+                if (id && name) {
+                  appsMap[id] = { id, name };
+                }
+              });
+            }
+          }
+        } catch {}
       }
 
       const sortedApps = Object.values(appsMap).sort((a, b) => a.name.localeCompare(b.name, 'sv'));
       setAvailableApps(sortedApps);
 
-      // B. Hämta Reloads (Tenant-övergripande)
+      // B. Hämta Reloads
       const reloadsRes = await fetch(`https://${host}/api/v1/reloads?limit=100`, { headers });
       if (reloadsRes.ok) {
-        const reloadsData = await reloadsRes.json();
+        const reloadsData: any = await reloadsRes.json();
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const rawReloads: any[] = reloadsData.data || [];
 
@@ -187,7 +211,7 @@ export default function App() {
     }
   };
 
-  // 2. Hämta Master Items via Vercel Backend Function
+  // 2. Hämta Master Items via backend
   const fetchMasterItemsForApp = async (appId: string) => {
     if (!appId || !apiToken) return;
     const host = formatTenantHost(tenantInput);
@@ -249,7 +273,7 @@ export default function App() {
     }
   }, [sourceAppId]);
 
-  // Exportera valda Master Items till JSON
+  // Exportera till JSON
   const exportToJson = () => {
     const selectedMeasuresList = measures.filter(m => selectedMeasureIds.includes(m.id));
     const selectedDimensionsList = dimensions.filter(d => selectedDimensionIds.includes(d.id));
@@ -272,7 +296,7 @@ export default function App() {
     downloadAnchor.remove();
   };
 
-  // Riktig synkronisering mot motorn
+  // Synkronisera till mål-app
   const handleSync = async () => {
     if (!targetAppId || !apiToken) {
       setError('Vänligen välj en Mål-app (Target App) att distribuera till.');
@@ -427,7 +451,7 @@ export default function App() {
           </button>
         </div>
 
-        {/* Anslutningsinställningar (Admin API Token) */}
+        {/* Anslutningsinställningar */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -477,9 +501,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ============================================================ */}
         {/* FLIK 1: MASTER ITEM DISTRIBUTOR */}
-        {/* ============================================================ */}
         {activeTab === 'master-items' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -791,9 +813,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ============================================================ */}
         {/* FLIK 2: RELOAD MONITOR */}
-        {/* ============================================================ */}
         {activeTab === 'reloads' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
