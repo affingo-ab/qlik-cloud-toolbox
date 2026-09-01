@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, Sparkles, X, CheckSquare, Square, AlertCircle } from 'lucide-react';
+import { ShieldCheck, Sparkles, X, CheckSquare, Square } from 'lucide-react';
 import type { SanitizedItem } from './sanitizer';
 
 interface Props {
