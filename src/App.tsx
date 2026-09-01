@@ -3,8 +3,12 @@ import * as XLSX from 'xlsx';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen, FileSpreadsheet
+  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen, FileSpreadsheet, FolderOpen
 } from 'lucide-react';
+import { ExcelVocabularyImportModal } from './ExcelVocabularyImportModal';
+import { AiSanitizePreviewModal } from './AiSanitizePreviewModal';
+import { prepareItemsForLLM } from './sanitizer';
+import type { SanitizedItem } from './sanitizer';
 
 interface ReloadItem {
   id: string;
@@ -38,7 +42,7 @@ interface MasterDimension {
   tags: string[];
 }
 
-interface VocabularyItem {
+export interface VocabularyItem {
   targetName: string;
   type: 'dimension' | 'measure' | 'field';
   synonyms: string[];
@@ -47,10 +51,11 @@ interface VocabularyItem {
 export default function App() {
   const [activeTab, setActiveTab] = useState<'vocabulary' | 'master-items' | 'reloads'>('vocabulary');
 
-  // Anslutningsinställningar (Admin API Token)
+  // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('qlik_api_token') || '');
   const [webIntegrationId, setWebIntegrationId] = useState(() => localStorage.getItem('qlik_web_int_id') || '');
+  const [geminiKeyInput, setGeminiKeyInput] = useState(() => localStorage.getItem('gemini_api_key') || '');
 
   // Status & Laddning
   const [loading, setLoading] = useState(false);
@@ -84,6 +89,9 @@ export default function App() {
   const [vocabSearchQuery, setVocabSearchQuery] = useState('');
   const [newSynonymInputs, setNewSynonymInputs] = useState<Record<string, string>>({});
   const [vocabStatusLog, setVocabStatusLog] = useState<string | null>(null);
+  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [previewItems, setPreviewItems] = useState<SanitizedItem[]>([]);
 
   const formatTenantHost = (input: string) => {
     let clean = input.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -98,15 +106,18 @@ export default function App() {
     localStorage.setItem('qlik_tenant_domain', tenantInput.trim());
     localStorage.setItem('qlik_api_token', apiToken.trim());
     localStorage.setItem('qlik_web_int_id', webIntegrationId.trim());
+    localStorage.setItem('gemini_api_key', geminiKeyInput.trim());
   };
 
   const clearSettings = () => {
     localStorage.removeItem('qlik_tenant_domain');
     localStorage.removeItem('qlik_api_token');
     localStorage.removeItem('qlik_web_int_id');
+    localStorage.removeItem('gemini_api_key');
     setTenantInput('');
     setApiToken('');
     setWebIntegrationId('');
+    setGeminiKeyInput('');
     setReloadsList([]);
     setAvailableApps([]);
     setMeasures([]);
@@ -178,7 +189,6 @@ export default function App() {
       const sortedApps = Object.values(appsMap).sort((a, b) => a.name.localeCompare(b.name, 'sv'));
       setAvailableApps(sortedApps);
 
-      // Hämta Reloads
       const reloadsRes = await fetch(`https://${host}/api/v1/reloads?limit=100`, { headers });
       if (reloadsRes.ok) {
         const reloadsData: any = await reloadsRes.json();
@@ -208,7 +218,7 @@ export default function App() {
     }
   };
 
-  // 2. Hämta Master Items för Master Item Distributor
+  // 2. Hämta Master Items
   const fetchMasterItemsForApp = async (appId: string) => {
     if (!appId || !apiToken) return;
     const host = formatTenantHost(tenantInput);
@@ -317,24 +327,81 @@ export default function App() {
     }
   };
 
-  // 4. Generera AI-synonymer
-  const generateAiSynonyms = async () => {
+  // 4. Hantera Excel-import
+  const handleImportVocabulary = (importedItems: VocabularyItem[], mode: 'replace' | 'merge') => {
+    if (mode === 'replace') {
+      setVocabularyList(importedItems);
+      setVocabStatusLog(`📂 Läste in ${importedItems.length} st termer från Excel (Ersatte befintlig lista).`);
+      return;
+    }
+
+    setVocabularyList((prev) => {
+      const map = new Map<string, VocabularyItem>();
+      prev.forEach(item => map.set(item.targetName.toLowerCase(), { ...item }));
+
+      let newCount = 0;
+      let enrichedCount = 0;
+
+      importedItems.forEach(newItem => {
+        const key = newItem.targetName.toLowerCase();
+        if (map.has(key)) {
+          const existing = map.get(key)!;
+          const mergedSynonyms = Array.from(new Set([...existing.synonyms, ...newItem.synonyms]));
+          if (mergedSynonyms.length > existing.synonyms.length) enrichedCount++;
+          map.set(key, { ...existing, synonyms: mergedSynonyms });
+        } else {
+          newCount++;
+          map.set(key, newItem);
+        }
+      });
+
+      setVocabStatusLog(
+        `🔄 Excel-import slutförd!\n` +
+        `• Nya fält/termer tillagda: ${newCount} st\n` +
+        `• Befintliga fält berikade med synonymer: ${enrichedCount} st\n` +
+        `• Totalt antal termer i ordboken: ${map.size} st`
+      );
+
+      return Array.from(map.values());
+    });
+  };
+
+  // 5. AI-generering (Öppna Säkerhets-preview)
+  const handleOpenAiPreview = () => {
     if (vocabularyList.length === 0) return;
+    const sanitized = prepareItemsForLLM(
+      vocabularyList.map(v => ({ targetName: v.targetName, type: v.type }))
+    );
+    setPreviewItems(sanitized);
+    setIsPreviewModalOpen(true);
+  };
+
+  // 6. Skarpt AI-anrop efter godkännande
+  const handleExecuteAiGeneration = async (selectedItems: SanitizedItem[], domain: string) => {
+    setIsPreviewModalOpen(false);
     setVocabLoading(true);
     setError(null);
+    setVocabStatusLog('🤖 Skickar sanerad metadata till AI för synonymgenerering...');
 
     try {
-      const itemsToAnalyze = vocabularyList.map(v => ({ name: v.targetName, type: v.type }));
       const response = await fetch('/api/generate-synonyms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: itemsToAnalyze }),
+        body: JSON.stringify({ 
+          items: selectedItems,
+          geminiKey: geminiKeyInput.trim(),
+          domain: domain
+        }),
       });
 
-      if (!response.ok) throw new Error('Kunde inte generera synonymer');
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Kunde inte generera synonymer');
+      }
 
       const data = await response.json();
       const suggestions: any[] = data.suggestions || [];
+      const source = data.source === 'gemini' ? `Google Gemini (${data.modelUsed})` : `Inbyggd lokal regelmotor (Fallback)`;
       const sugMap: Record<string, string[]> = {};
 
       suggestions.forEach((s: any) => {
@@ -351,10 +418,16 @@ export default function App() {
       });
 
       setVocabularyList(updatedList);
-      setVocabStatusLog('✨ AI-synonymer genererade och tillagda! Klicka på "Exportera Qlik AI Excel (.xlsx)" för att ladda ner importfilen.');
+      setVocabStatusLog(
+        `✨ AI-synonymer genererade och tillagda!\n` +
+        `• Modell som användes: ${source}\n` +
+        `• Antal analyserade fält: ${suggestions.length} st\n\n` +
+        `👉 Klicka på "Exportera Qlik AI Excel (.xlsx)" för att ladda ner importfilen.`
+      );
 
     } catch (err: any) {
       setError('AI-generering misslyckades: ' + err.message);
+      setVocabStatusLog(null);
     } finally {
       setVocabLoading(false);
     }
@@ -385,39 +458,41 @@ export default function App() {
     }));
   };
 
-  // 5. Exportera Qlik-kompatibel Excel-fil (.xlsx)
+  // 7. Exportera Qlik-kompatibel Excel-fil (.xlsx)
   const exportVocabularyToExcel = () => {
     const targetApp = availableApps.find(a => a.id === vocabAppId);
-    const activeVocab = vocabularyList.filter(v => v.synonyms.length > 0);
+    const activeVocab = vocabularyList.filter(v => v.synonyms && v.synonyms.length > 0);
 
     if (activeVocab.length === 0) {
       setError('Inga synonymer att exportera. Generera AI-synonymer eller lägg till manuellt först.');
       return;
     }
 
-    // Bygg exakt tabellstruktur för Qlik Sense Vocabulary Import
-    const excelRows = activeVocab.map(item => ({
-      'Field': item.targetName,
-      'Locale': 'sv',
-      'Terms': item.synonyms.join(', '),
-      'Condition Type': '',
-      'Condition Value': '',
-      'Master Item': item.type === 'measure' || item.type === 'dimension' ? 'TRUE' : 'FALSE',
-    }));
+    const headers = ['Field', 'Locale', 'Terms', 'Condition Type', 'Condition Values', 'Master Item'];
+    const rows: string[][] = [headers];
 
-    const worksheet = XLSX.utils.json_to_sheet(excelRows);
+    activeVocab.forEach(item => {
+      rows.push([
+        String(item.targetName || ''),
+        'Sv',
+        item.synonyms.join('||'),
+        '',
+        '',
+        item.type === 'measure' || item.type === 'dimension' ? 'True' : 'False'
+      ]);
+    });
+
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Vocabulary');
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
 
     const fileName = `qlik_vocabulary_${targetApp?.name ? targetApp.name.toLowerCase().replace(/\s+/g, '_') : 'export'}.xlsx`;
     XLSX.writeFile(workbook, fileName);
 
     setVocabStatusLog(
       `📥 Excel-fil "${fileName}" har laddats ner!\n` +
-      `• Innehåller ${excelRows.length} st fält och mått med fulla synonymer.\n\n` +
-      `💡 Så här importerar du den i Qlik Sense:\n` +
-      `1. Öppna appen i Qlik Sense Hub ➔ Prepare ➔ Business logic ➔ Vocabulary.\n` +
-      `2. Klicka på "Import" (Importera) och välj din nedladdade Excel-fil ➔ Klart!`
+      `• Innehåller ${activeVocab.length} st fält formaterade efter Qliks officiella mall.\n\n` +
+      `💡 Importera i Qlik Sense: Prepare ➔ Business logic ➔ Vocabulary ➔ Import.`
     );
   };
 
@@ -645,29 +720,35 @@ export default function App() {
 
         {/* Anslutningsinställningar */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
               <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                <Server className="w-3.5 h-3.5" /> Tenant URL / Domän
+                <Server className="w-3.5 h-3.5 text-emerald-400" /> Tenant URL / Domän
               </label>
               <input
                 type="text"
-                placeholder="t.ex. din-tenant.eu.qlikcloud.com"
+                placeholder="t.ex. tenant.eu.qlikcloud.com"
                 value={tenantInput}
-                onChange={(e) => setTenantInput(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                onChange={(e) => {
+                  setTenantInput(e.target.value);
+                  localStorage.setItem('qlik_tenant_domain', e.target.value.trim());
+                }}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
               />
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                <Key className="w-3.5 h-3.5" /> API Key (Personal Access Token)
+                <Key className="w-3.5 h-3.5 text-emerald-400" /> Qlik API Key (Personal Token)
               </label>
               <input
                 type="password"
                 placeholder="Klistra in token..."
                 value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                onChange={(e) => {
+                  setApiToken(e.target.value);
+                  localStorage.setItem('qlik_api_token', e.target.value.trim());
+                }}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
               />
             </div>
             <div>
@@ -678,8 +759,26 @@ export default function App() {
                 type="text"
                 placeholder="Från QMC -> Web..."
                 value={webIntegrationId}
-                onChange={(e) => setWebIntegrationId(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                onChange={(e) => {
+                  setWebIntegrationId(e.target.value);
+                  localStorage.setItem('qlik_web_int_id', e.target.value.trim());
+                }}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Gemini API Key (Gratis AI)
+              </label>
+              <input
+                type="password"
+                placeholder="AIzaSy..."
+                value={geminiKeyInput}
+                onChange={(e) => {
+                  setGeminiKeyInput(e.target.value);
+                  localStorage.setItem('gemini_api_key', e.target.value.trim());
+                }}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
               />
             </div>
           </div>
@@ -699,60 +798,90 @@ export default function App() {
         {activeTab === 'vocabulary' && (
           <div className="space-y-6">
             
-            {/* App-val och Handlingsknappar */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="flex-1">
-                  <label className="text-xs font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-2 mb-2">
-                    <BookOpen className="w-4 h-4" /> Välj app för affärslogik & AI-träning
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="relative">
-                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                      <input
-                        type="text"
-                        placeholder="Filtrera appar (A–Ö)..."
-                        value={vocabAppSearch}
-                        onChange={(e) => setVocabAppSearch(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                      />
-                    </div>
-                    <select
-                      value={vocabAppId}
-                      onChange={(e) => setVocabAppId(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
-                    >
-                      <option value="">-- Välj app ({filteredVocabApps.length} st) --</option>
-                      {filteredVocabApps.map((app) => (
-                        <option key={app.id} value={app.id}>
-                          {app.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+            {/* Kort Steg-för-steg guide */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
+              <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                <span>💡</span> Så här skapar du ett nytt vocabulary i en app:
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-300">
+                <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl">
+                  <span className="font-bold text-emerald-400 block mb-1">1. Synka Master Items</span>
+                  Om fälten är nya mått/dimensioner, synka dem först till mål-appen i <em>Master Item Distributor</em>.
+                </div>
+                <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl">
+                  <span className="font-bold text-emerald-400 block mb-1">2. Välj app & Berika</span>
+                  Välj appen nedan, klicka på <em>Generera AI-synonymer</em> och justera eventuella termer manuellt.
+                </div>
+                <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl">
+                  <span className="font-bold text-emerald-400 block mb-1">3. Exportera & Importera</span>
+                  Exportera Excel-filen och ladda upp den i Qlik Sense under <em>Prepare ➔ Business logic ➔ Vocabulary</em>.
+                </div>
+              </div>
+            </div>
+
+            {/* App-väljare (Full Bredd) */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-xl">
+              <label className="text-xs font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                <BookOpen className="w-4 h-4" /> Välj app för affärslogik & AI-träning
+              </label>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Filtrera lista (A–Ö)..."
+                    value={vocabAppSearch}
+                    onChange={(e) => setVocabAppSearch(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  />
                 </div>
 
-                <div className="flex items-center gap-3 pt-4 md:pt-0">
+                <select
+                  value={vocabAppId}
+                  onChange={(e) => setVocabAppId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                >
+                  <option value="">-- Välj app ({filteredVocabApps.length} st tillgängliga) --</option>
+                  {filteredVocabApps.map((app) => (
+                    <option key={app.id} value={app.id}>
+                      {app.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Handlingsknappar på en egen rad */}
+              <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-slate-400">
+                  {vocabLoading ? 'Läser in fält och affärslogik via motorn...' : vocabularyList.length > 0 ? `Inläst: ${vocabularyList.length} st fält, mått och dimensioner` : 'Välj en app ovan eller läs in en Excel-ordbok för att starta.'}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
                   <button
-                    onClick={generateAiSynonyms}
-                    disabled={!vocabAppId || vocabularyList.length === 0 || vocabLoading}
-                    className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 px-4 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow-lg cursor-pointer"
+                    onClick={() => setIsExcelModalOpen(true)}
+                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold border border-slate-700 transition shadow cursor-pointer"
+                  >
+                    <FolderOpen className="w-4 h-4 text-emerald-400" /> Läs in Excel-ordbok (.xlsx)
+                  </button>
+
+                  <button
+                    onClick={handleOpenAiPreview}
+                    disabled={vocabularyList.length === 0 || vocabLoading}
+                    className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 px-5 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow-lg cursor-pointer"
                   >
                     <Sparkles className="w-4 h-4" /> Generera AI-synonymer
                   </button>
+
                   <button
                     onClick={exportVocabularyToExcel}
-                    disabled={!vocabAppId || vocabularyList.length === 0 || vocabLoading}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow cursor-pointer"
+                    disabled={vocabularyList.length === 0 || vocabLoading}
+                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition disabled:opacity-40 shadow cursor-pointer"
                   >
                     <FileSpreadsheet className="w-4 h-4" /> Exportera Qlik AI Excel (.xlsx)
                   </button>
                 </div>
               </div>
-
-              <p className="text-xs text-slate-500">
-                {vocabLoading ? 'Läser in fält och affärslogik via motorn...' : vocabAppId ? `Inläst: ${vocabularyList.length} fält, mått och dimensioner` : 'Välj en app för att läsa in dess fält och koppla synonymer för Qliks AI.'}
-              </p>
             </div>
 
             {/* Statuslogg för Vokabulär */}
@@ -781,14 +910,14 @@ export default function App() {
                 </div>
               </div>
 
-              {!vocabAppId ? (
+              {vocabularyList.length === 0 ? (
                 <div className="p-12 text-center text-slate-500 text-sm">
-                  Vänligen välj en app ovan för att visa dess fält och synonymer.
+                  Vänligen välj en app ovan eller klicka på "Läs in Excel-ordbok (.xlsx)" för att fylla på ordboken.
                 </div>
               ) : vocabLoading ? (
                 <div className="p-12 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
                   <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
-                  Hämtar appens datastruktur och affärslogik från QIX Engine...
+                  Bearbetar affärslogik och synonymer...
                 </div>
               ) : filteredVocabularyList.length === 0 ? (
                 <div className="p-12 text-center text-slate-500 text-sm">
@@ -858,6 +987,23 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* Excel Import Modal */}
+            <ExcelVocabularyImportModal
+              isOpen={isExcelModalOpen}
+              onClose={() => setIsExcelModalOpen(false)}
+              onImport={handleImportVocabulary}
+              existingCount={vocabularyList.length}
+            />
+
+            {/* Säkerhets Preview Modal */}
+            <AiSanitizePreviewModal
+              isOpen={isPreviewModalOpen}
+              onClose={() => setIsPreviewModalOpen(false)}
+              items={previewItems}
+              onConfirm={handleExecuteAiGeneration}
+              isGenerating={vocabLoading}
+            />
 
           </div>
         )}
