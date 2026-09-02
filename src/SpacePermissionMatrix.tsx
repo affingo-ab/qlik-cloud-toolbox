@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { RefreshCw, Download, Search, Users, User, Folder, ShieldCheck, Shield } from 'lucide-react';
+import { RefreshCw, Download, Search, Users, User, Folder, ShieldCheck} from 'lucide-react';
 
 interface Props {
   tenantInput: string;
@@ -467,4 +467,4 @@ export const SpacePermissionMatrix: React.FC<Props> = ({
       )}
     </div>
   );
-};
+}; 
