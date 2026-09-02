@@ -18,7 +18,7 @@ export const AiSanitizePreviewModal: React.FC<Props> = ({
   isGenerating,
 }) => {
   const [selectedIndices, setSelectedIndices] = useState<number[]>(() => items.map((_, i) => i));
-  const [domain, setDomain] = useState('Bryggeri, Tillverkning & Försäljning');
+  const [domain, setDomain] = useState(() => localStorage.getItem('ai_business_domain') || 'Tillverkning, Försäljning & Affärsverksamhet');
 
   if (!isOpen) return null;
 
@@ -38,10 +38,12 @@ export const AiSanitizePreviewModal: React.FC<Props> = ({
     }
   };
 
-  const handleExecute = () => {
-    const itemsToSend = items.filter((_, i) => selectedIndices.includes(i));
-    onConfirm(itemsToSend, domain);
-  };
+const handleExecute = () => {
+  const cleanDomain = domain.trim() || 'Tillverkning, Försäljning & Affärsverksamhet';
+  localStorage.setItem('ai_business_domain', cleanDomain);
+  const itemsToSend = items.filter((_, i) => selectedIndices.includes(i));
+  onConfirm(itemsToSend, cleanDomain);
+};
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
