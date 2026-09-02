@@ -3,12 +3,13 @@ import * as XLSX from 'xlsx';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen, FileSpreadsheet, FolderOpen
+  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen, FileSpreadsheet, FolderOpen,Folder
 } from 'lucide-react';
 import { ExcelVocabularyImportModal } from './ExcelVocabularyImportModal';
 import { AiSanitizePreviewModal } from './AiSanitizePreviewModal';
 import { prepareItemsForLLM } from './sanitizer';
 import type { SanitizedItem } from './sanitizer';
+import { SpacePermissionMatrix } from './SpacePermissionMatrix';
 
 interface ReloadItem {
   id: string;
@@ -49,7 +50,7 @@ export interface VocabularyItem {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'vocabulary' | 'master-items' | 'reloads'>('vocabulary');
+  const [activeTab, setActiveTab] = useState<'vocabulary' | 'master-items' | 'reloads' | 'spaces'>('vocabulary');
 
   // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
@@ -658,7 +659,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">Qlik Cloud Admin Toolbox</h1>
-              <p className="text-sm text-slate-400">Övervakning, Master Items och AI-vokabulär</p>
+              <p className="text-sm text-slate-400">Övervakning, Master Items, AI-vokabulär och Behörighetsmatris</p>
             </div>
           </div>
 
@@ -716,6 +717,17 @@ export default function App() {
             <Play className="w-4 h-4" />
             Reload Monitor
           </button>
+          <button
+            onClick={() => setActiveTab('spaces')}
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+              activeTab === 'spaces'
+                ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
+            }`}
+          >
+            <Folder className="w-4 h-4" />
+            Space Matrix
+          </button>          
         </div>
 
         {/* Anslutningsinställningar */}
@@ -1434,7 +1446,14 @@ export default function App() {
             </div>
           </div>
         )}
-
+{/* LÄGG IN SPACE MATRIX DIREKT HÄR: */}
+{activeTab === 'spaces' && (
+    <SpacePermissionMatrix 
+      tenantInput={tenantInput} 
+      apiToken={apiToken} 
+      webIntegrationId={webIntegrationId} 
+    />
+)}
       </div>
     </div>
   );
