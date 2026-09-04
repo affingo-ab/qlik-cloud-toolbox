@@ -1,16 +1,11 @@
 import { AiBusinessLogicEnricher } from './components/AiBusinessLogicEnricher';
 import { Wand2 } from 'lucide-react';
 import { useState, useEffect } from 'react';
-import * as XLSX from 'xlsx';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database, Sparkles, Plus, X, BookOpen, FileSpreadsheet, FolderOpen,Folder
+  Download, CheckSquare, Square, Sliders, Database,Folder
 } from 'lucide-react';
-import { ExcelVocabularyImportModal } from './ExcelVocabularyImportModal';
-import { AiSanitizePreviewModal } from './AiSanitizePreviewModal';
-import { prepareItemsForLLM } from './sanitizer';
-import type { SanitizedItem } from './sanitizer';
 import { SpacePermissionMatrix } from './SpacePermissionMatrix';
 
 interface ReloadItem {
@@ -52,7 +47,7 @@ export interface VocabularyItem {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'ai-hub' | 'master-items' | 'space-matrix' | 'reloads'>('ai-hub');
+  const [activeTab, setActiveTab] = useState<'ai-hub' | 'master-items' | 'spaces' | 'reloads'>('ai-hub');
 
   // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
@@ -63,8 +58,7 @@ export default function App() {
   // Status & Laddning
   const [loading, setLoading] = useState(false);
   const [itemLoading, setItemLoading] = useState(false);
-  const [vocabLoading, setVocabLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+   const [error, setError] = useState<string | null>(null);
 
   // Reloads State
   const [reloadsList, setReloadsList] = useState<ReloadItem[]>([]);
@@ -85,16 +79,7 @@ export default function App() {
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [syncStatusLog, setSyncStatusLog] = useState<string | null>(null);
 
-  // AI Vocabulary Hub State
-  const [vocabAppId, setVocabAppId] = useState<string>('');
-  const [vocabAppSearch, setVocabAppSearch] = useState('');
-  const [vocabularyList, setVocabularyList] = useState<VocabularyItem[]>([]);
-  const [vocabSearchQuery, setVocabSearchQuery] = useState('');
-  const [newSynonymInputs, setNewSynonymInputs] = useState<Record<string, string>>({});
-  const [vocabStatusLog, setVocabStatusLog] = useState<string | null>(null);
-  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
-  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
-  const [previewItems, setPreviewItems] = useState<SanitizedItem[]>([]);
+  
 
   const formatTenantHost = (input: string) => {
     let clean = input.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -125,10 +110,8 @@ export default function App() {
     setAvailableApps([]);
     setMeasures([]);
     setDimensions([]);
-    setVocabularyList([]);
     setSourceAppId('');
     setTargetAppId('');
-    setVocabAppId('');
   };
 
   const getHeaders = () => {
@@ -262,243 +245,6 @@ export default function App() {
     }
   };
 
-  // 3. Hämta Fält, Dimensioner och Mått för AI Vocabulary Hub
-  const fetchVocabularyForApp = async (appId: string) => {
-    if (!appId || !apiToken) return;
-    const host = formatTenantHost(tenantInput);
-    setVocabLoading(true);
-    setError(null);
-    setVocabStatusLog(null);
-
-    try {
-      const response = await fetch('/api/vocabulary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'get',
-          tenant: host,
-          apiKey: apiToken.trim(),
-          appId: appId,
-        }),
-      });
-
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `Kunde inte läsa fält (${response.status})`);
-      }
-
-      const data = await response.json();
-      const rawDimensions: any[] = data.dimensions || [];
-      const rawMeasures: any[] = data.measures || [];
-      const rawFields: string[] = data.fields || [];
-      const existingVocab: any[] = data.existingVocab || [];
-
-      const existingMap: Record<string, string[]> = {};
-      existingVocab.forEach((item: any) => {
-        if (item.targetName) {
-          existingMap[item.targetName.toLowerCase()] = item.synonyms || [];
-        }
-      });
-
-      const combinedList: VocabularyItem[] = [
-        ...rawDimensions.map(d => ({
-          targetName: d.title,
-          type: 'dimension' as const,
-          synonyms: existingMap[d.title.toLowerCase()] || [],
-        })),
-        ...rawMeasures.map(m => ({
-          targetName: m.title,
-          type: 'measure' as const,
-          synonyms: existingMap[m.title.toLowerCase()] || [],
-        })),
-        ...rawFields
-          .filter(f => !rawDimensions.some(d => d.title.toLowerCase() === f.toLowerCase()))
-          .map(f => ({
-            targetName: f,
-            type: 'field' as const,
-            synonyms: existingMap[f.toLowerCase()] || [],
-          })),
-      ];
-
-      setVocabularyList(combinedList);
-
-    } catch (err: any) {
-      console.error('Vocabulary Fetch Error:', err);
-      setError('Kunde inte läsa in fält från appen: ' + err.message);
-    } finally {
-      setVocabLoading(false);
-    }
-  };
-
-  // 4. Hantera Excel-import
-  const handleImportVocabulary = (importedItems: VocabularyItem[], mode: 'replace' | 'merge') => {
-    if (mode === 'replace') {
-      setVocabularyList(importedItems);
-      setVocabStatusLog(`📂 Läste in ${importedItems.length} st termer från Excel (Ersatte befintlig lista).`);
-      return;
-    }
-
-    setVocabularyList((prev) => {
-      const map = new Map<string, VocabularyItem>();
-      prev.forEach(item => map.set(item.targetName.toLowerCase(), { ...item }));
-
-      let newCount = 0;
-      let enrichedCount = 0;
-
-      importedItems.forEach(newItem => {
-        const key = newItem.targetName.toLowerCase();
-        if (map.has(key)) {
-          const existing = map.get(key)!;
-          const mergedSynonyms = Array.from(new Set([...existing.synonyms, ...newItem.synonyms]));
-          if (mergedSynonyms.length > existing.synonyms.length) enrichedCount++;
-          map.set(key, { ...existing, synonyms: mergedSynonyms });
-        } else {
-          newCount++;
-          map.set(key, newItem);
-        }
-      });
-
-      setVocabStatusLog(
-        `🔄 Excel-import slutförd!\n` +
-        `• Nya fält/termer tillagda: ${newCount} st\n` +
-        `• Befintliga fält berikade med synonymer: ${enrichedCount} st\n` +
-        `• Totalt antal termer i ordboken: ${map.size} st`
-      );
-
-      return Array.from(map.values());
-    });
-  };
-
-  // 5. AI-generering (Öppna Säkerhets-preview)
-  const handleOpenAiPreview = () => {
-    if (vocabularyList.length === 0) return;
-    const sanitized = prepareItemsForLLM(
-      vocabularyList.map(v => ({ targetName: v.targetName, type: v.type }))
-    );
-    setPreviewItems(sanitized);
-    setIsPreviewModalOpen(true);
-  };
-
-  // 6. Skarpt AI-anrop efter godkännande
-  const handleExecuteAiGeneration = async (selectedItems: SanitizedItem[], domain: string) => {
-    setIsPreviewModalOpen(false);
-    setVocabLoading(true);
-    setError(null);
-    setVocabStatusLog('🤖 Skickar sanerad metadata till AI för synonymgenerering...');
-
-    try {
-      const response = await fetch('/api/generate-synonyms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          items: selectedItems,
-          geminiKey: geminiKeyInput.trim(),
-          domain: domain
-        }),
-      });
-
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || 'Kunde inte generera synonymer');
-      }
-
-      const data = await response.json();
-      const suggestions: any[] = data.suggestions || [];
-      const source = data.source === 'gemini' ? `Google Gemini (${data.modelUsed})` : `Inbyggd lokal regelmotor (Fallback)`;
-      const sugMap: Record<string, string[]> = {};
-
-      suggestions.forEach((s: any) => {
-        sugMap[s.targetName] = s.suggestedSynonyms || [];
-      });
-
-      const updatedList = vocabularyList.map(item => {
-        const newSugs = sugMap[item.targetName] || [];
-        const uniqueSet = new Set([...item.synonyms, ...newSugs]);
-        return {
-          ...item,
-          synonyms: Array.from(uniqueSet),
-        };
-      });
-
-      setVocabularyList(updatedList);
-      setVocabStatusLog(
-        `✨ AI-synonymer genererade och tillagda!\n` +
-        `• Modell som användes: ${source}\n` +
-        `• Antal analyserade fält: ${suggestions.length} st\n\n` +
-        `👉 Klicka på "Exportera Qlik AI Excel (.xlsx)" för att ladda ner importfilen.`
-      );
-
-    } catch (err: any) {
-      setError('AI-generering misslyckades: ' + err.message);
-      setVocabStatusLog(null);
-    } finally {
-      setVocabLoading(false);
-    }
-  };
-
-  // Lägg till synonym manuellt
-  const addSynonymToItem = (targetName: string) => {
-    const text = (newSynonymInputs[targetName] || '').trim();
-    if (!text) return;
-
-    setVocabularyList(prev => prev.map(item => {
-      if (item.targetName === targetName && !item.synonyms.includes(text)) {
-        return { ...item, synonyms: [...item.synonyms, text] };
-      }
-      return item;
-    }));
-
-    setNewSynonymInputs(prev => ({ ...prev, [targetName]: '' }));
-  };
-
-  // Ta bort synonym
-  const removeSynonymFromItem = (targetName: string, synToRemove: string) => {
-    setVocabularyList(prev => prev.map(item => {
-      if (item.targetName === targetName) {
-        return { ...item, synonyms: item.synonyms.filter(s => s !== synToRemove) };
-      }
-      return item;
-    }));
-  };
-
-  // 7. Exportera Qlik-kompatibel Excel-fil (.xlsx)
-  const exportVocabularyToExcel = () => {
-    const targetApp = availableApps.find(a => a.id === vocabAppId);
-    const activeVocab = vocabularyList.filter(v => v.synonyms && v.synonyms.length > 0);
-
-    if (activeVocab.length === 0) {
-      setError('Inga synonymer att exportera. Generera AI-synonymer eller lägg till manuellt först.');
-      return;
-    }
-
-    const headers = ['Field', 'Locale', 'Terms', 'Condition Type', 'Condition Values', 'Master Item'];
-    const rows: string[][] = [headers];
-
-    activeVocab.forEach(item => {
-      rows.push([
-        String(item.targetName || ''),
-        'Sv',
-        item.synonyms.join('||'),
-        '',
-        '',
-        item.type === 'measure' || item.type === 'dimension' ? 'True' : 'False'
-      ]);
-    });
-
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
-
-    const fileName = `qlik_vocabulary_${targetApp?.name ? targetApp.name.toLowerCase().replace(/\s+/g, '_') : 'export'}.xlsx`;
-    XLSX.writeFile(workbook, fileName);
-
-    setVocabStatusLog(
-      `📥 Excel-fil "${fileName}" har laddats ner!\n` +
-      `• Innehåller ${activeVocab.length} st fält formaterade efter Qliks officiella mall.\n\n` +
-      `💡 Importera i Qlik Sense: Prepare ➔ Business logic ➔ Vocabulary ➔ Import.`
-    );
-  };
-
   useEffect(() => {
     if (tenantInput && apiToken) {
       fetchInitialData();
@@ -514,13 +260,6 @@ export default function App() {
     }
   }, [sourceAppId]);
 
-  useEffect(() => {
-    if (vocabAppId) {
-      fetchVocabularyForApp(vocabAppId);
-    } else {
-      setVocabularyList([]);
-    }
-  }, [vocabAppId]);
 
   // Synka Master Items
   const handleSyncMasterItems = async () => {
@@ -605,15 +344,6 @@ export default function App() {
 
   const filteredTargetApps = availableApps.filter(app => 
     app.id !== sourceAppId && app.name.toLowerCase().includes(targetAppSearch.toLowerCase())
-  );
-
-  const filteredVocabApps = availableApps.filter(app => 
-    app.name.toLowerCase().includes(vocabAppSearch.toLowerCase())
-  );
-
-  const filteredVocabularyList = vocabularyList.filter(item => 
-    item.targetName.toLowerCase().includes(vocabSearchQuery.toLowerCase()) ||
-    item.synonyms.some(s => s.toLowerCase().includes(vocabSearchQuery.toLowerCase()))
   );
 
   const filteredMeasures = measures.filter(m => 

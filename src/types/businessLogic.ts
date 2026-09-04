@@ -49,6 +49,7 @@ export interface VocabularyTerm {
   type: 'measure' | 'dimension' | 'field';
   locale: 'sv' | 'en';
   synonyms: string[];
+  selected?: boolean;
 }
 
 export interface CustomAnalysis {
