@@ -6,13 +6,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { fields = [], appName = 'Qlik App', geminiKey, domain = 'Försäljning, Affärsverksamhet & Logistik' } = req.body as {
     fields: (string | RawFieldInfo)[];
@@ -25,138 +20,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Inga fält skickades med för analys.' });
   }
 
-  const apiKey = geminiKey?.trim() || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const apiKey = (geminiKey || '').trim() || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
-  const normalizedFields: RawFieldInfo[] = fields.map(f => {
-    if (typeof f === 'string') {
-      const isKey = f.toLowerCase().endsWith('id') || f.toLowerCase().endsWith('key') || f.startsWith('%');
-      const isDate = f.toLowerCase().includes('date') || f.toLowerCase().includes('datum') || f.toLowerCase() === 'year' || f.toLowerCase() === 'month';
-      return {
-        name: f,
-        type: isKey ? 'key' : isDate ? 'date' : 'unknown'
-      };
-    }
-    return f;
-  });
-
-  const prompt = `
-Du är en ledande Qlik Sense- och Qlik Cloud AI-expert (Natural Language & Business Logic).
-Din uppgift är att ta fram en komplett, produktionsredo Business Logic-konfiguration för appen "${appName}" inom domänen "${domain}".
-
-Följande fält finns i appens datamodell:
-${JSON.stringify(normalizedFields, null, 2)}
-
-Skapa en komplett berikning i JSON med EXAKT denna struktur:
-{
-  "masterItems": {
-    "measures": [
-      {
-        "id": "meas_total_sales",
-        "title": "Total Sales",
-        "label": "Total Försäljning",
-        "expression": "Sum(Sales)",
-        "description": "Summan av total försäljning.",
-        "format": "#,##0 kr",
-        "tags": ["AI-Generated", "Core"]
-      }
-    ],
-    "dimensions": [
-      {
-        "id": "dim_customer",
-        "title": "Customer",
-        "label": "Kund",
-        "fieldDefs": ["Customer"],
-        "description": "Kundnamn/konto.",
-        "tags": ["AI-Generated"]
-      }
-    ]
-  },
-  "logicalModel": {
-    "groups": [
-      {
-        "name": "Sales Measures",
-        "type": "measure",
-        "items": ["Total Sales"]
-      },
-      {
-        "name": "Customers",
-        "type": "dimension",
-        "items": ["Customer", "City", "Country"]
-      },
-      {
-        "name": "Order Calendar",
-        "type": "calendar",
-        "items": ["OrderDate", "Year", "Month"],
-        "defaultGrain": "Month"
-      }
-    ],
-    "hiddenFields": ["OrderID", "CustomerID", "ProductID"],
-    "packages": [
-      {
-        "name": "Commercial Scope",
-        "description": "Huvudsaklig analys för försäljning och kunder",
-        "groups": ["Sales Measures", "Customers", "Order Calendar"]
-      }
-    ],
-    "hierarchies": [
-      {
-        "name": "Geografi",
-        "levels": ["Country", "City", "Customer"]
-      }
-    ],
-    "behaviors": [
-      {
-        "type": "prefer",
-        "description": "Föredra kund framför stad vid försäljningsanalys",
-        "measureGroup": "Sales Measures",
-        "preferredGroup": "Customers"
-      }
-    ]
-  },
-  "vocabulary": {
-    "sv": {
-      "terms": [
-        {
-          "targetName": "Total Sales",
-          "type": "measure",
-          "locale": "sv",
-          "synonyms": ["omsättning", "intäkt", "försäljning", "top line"]
-        }
-      ],
-      "exampleQuestions": [
-        "Hur stor är total försäljning per kund i år?",
-        "Visa försäljning per månad"
-      ]
-    },
-    "en": {
-      "terms": [
-        {
-          "targetName": "Total Sales",
-          "type": "measure",
-          "locale": "en",
-          "synonyms": ["revenue", "turnover", "total sales", "gross sales"]
-        }
-      ],
-      "exampleQuestions": [
-        "What is the total sales by customer this year?",
-        "Show sales trend by month"
-      ]
-    }
+  if (!apiKey) {
+    return res.status(400).json({
+      error: 'Gemini API-nyckel saknas! Fyll i din API-nyckel i verktyget.'
+    });
   }
-}
 
-Regler:
-1. Identifiera alla tekniska ID/nycklar och lägg dem i "hiddenFields" så att AI inte försöker visualisera dem.
-2. Skapa relevanta Master Measures med riktiga Qlik-formler (Sum, Avg, Count(DISTINCT ...)).
-3. Skapa synonymer på BÅDE svenska ("sv") och engelska ("en").
-4. Returnera ENDAST giltigt JSON utan markdown-kodblock.
-`;
+  // Dataminimering: Rensa bort tekniska prefix och ändelser
+  const sanitizedFieldNames = fields.map(f => {
+    const raw = typeof f === 'string' ? f : f.name;
+    return raw.replace(/^(tbl_|dim_|fct_|v_|%|_)/i, '').replace(/(_id|_kod|_code|_key)$/i, '').trim();
+  }).filter(Boolean);
 
-  if (apiKey) {
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash'];
-    for (const modelName of modelsToTry) {
+  // 1. Fråga Google vilka modeller som finns tillgängliga för API-nyckeln
+  let availableModels: string[] = [];
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      availableModels = (listData.models || [])
+        .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
+        .map((m: any) => m.name.replace(/^models\//, ''));
+    }
+  } catch (err: any) {
+    console.warn('Kunde inte lista modeller:', err.message);
+  }
+
+  // Googles officiella rekommenderade modeller (med gemini-3.6-flash överst)
+  const preferredModels = [
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-3.0-flash',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash'
+  ];
+
+  const candidateModels = [
+    'gemini-3.6-flash',
+    ...availableModels.filter(m => m.includes('3.') && m.includes('flash')),
+    ...preferredModels.filter(m => availableModels.includes(m)),
+    ...availableModels.filter(m => m.includes('flash')),
+    ...preferredModels
+  ].filter((v, i, a) => a.indexOf(v) === i);
+
+  // 2. Dela upp fälten i batchar om max 25 fält för 100% täckning
+  const BATCH_SIZE = 25;
+  const batches: string[][] = [];
+  for (let i = 0; i < sanitizedFieldNames.length; i += BATCH_SIZE) {
+    batches.push(sanitizedFieldNames.slice(i, i + BATCH_SIZE));
+  }
+
+  // Funktion för att köra en batch mot Gemini med automatisk modell-fallback
+  async function callGeminiWithFallback(prompt: string): Promise<{ data: FullBusinessLogicPlan; usedModel: string }> {
+    let lastError = '';
+
+    for (const model of candidateModels) {
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -165,123 +88,193 @@ Regler:
             generationConfig: {
               responseMimeType: "application/json",
               temperature: 0.2,
+              maxOutputTokens: 8192,
             }
           }),
         });
 
         if (response.ok) {
-          const data = await response.json();
-          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (rawText) {
-            const parsed = JSON.parse(rawText) as FullBusinessLogicPlan;
-            return res.status(200).json({ plan: parsed, source: 'gemini', modelUsed: modelName });
+          const resJson = await response.json();
+          let rawText = resJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          rawText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+          const firstBrace = rawText.indexOf('{');
+          const lastBrace = rawText.lastIndexOf('}');
+          if (firstBrace !== -1 && lastBrace !== -1) {
+            rawText = rawText.substring(firstBrace, lastBrace + 1);
           }
+          const parsed = JSON.parse(rawText) as FullBusinessLogicPlan;
+          return { data: parsed, usedModel: model };
+        } else {
+          const errBody = await response.text();
+          lastError = `${model} (${response.status}): ${errBody}`;
+          console.warn(`Modell ${model} gav fel, provar nästa:`, lastError);
         }
       } catch (err: any) {
-        console.warn(`Fel vid anrop till ${modelName}:`, err.message);
+        lastError = `${model} anrop misslyckades: ${err.message}`;
+        console.warn(lastError);
       }
     }
+
+    throw new Error(`Alla Gemini-modeller misslyckades. Senaste: ${lastError}`);
   }
 
-  // Lokal intelligent regelmotor som fallback
-  const fallbackPlan: FullBusinessLogicPlan = generateFallbackPlan(normalizedFields, appName);
-  return res.status(200).json({ plan: fallbackPlan, source: 'fallback', modelUsed: 'Inbyggd regelmotor' });
-}
+  async function processBatch(batchFields: string[]): Promise<{ plan: FullBusinessLogicPlan; usedModel: string }> {
+    const prompt = `
+Du är en ledande Qlik Cloud- och BI-expert specialiserad på Natural Language, Insight Advisor och Business Logic.
+Din uppgift är att systematiskt analysera ALLA ${batchFields.length} fält nedan för appen "${appName}" inom branschen "${domain}".
 
-function generateFallbackPlan(fields: RawFieldInfo[], appName: string): FullBusinessLogicPlan {
-  const hiddenFields: string[] = [];
-  const dimItems: string[] = [];
-  const calendarItems: string[] = [];
-  const measures: any[] = [];
-  const dimensions: any[] = [];
-  const vocabSv: any[] = [];
-  const vocabEn: any[] = [];
+Fält att analysera i denna batch:
+${batchFields.join(', ')}
 
-  for (const f of fields) {
-    const name = f.name;
-    const lower = name.toLowerCase();
+VIKTIGA REGLER FÖR 100% TÄCKNING:
+Du får INTE hoppa över några fält! Varje affärsrelevant fält SKALL bli antingen ett mått eller en dimension:
+1. MÅTT (MASTER MEASURES):
+   - Skapa mått för ALLA fält som är mätbara (t.ex. "Beställd mängd", "Beställd kvantitet", "Levererad mängd", "Total tid", "Schemalagd tid", "Belopp", "Kostnad", "Antal", "Volym", "Duration", etc.).
+   - Uttryck: t.ex. Sum([Beställd mängd]), Sum([Total tid]), Sum([Belopp]).
+2. DIMENSIONER (MASTER DIMENSIONS):
+   - Skapa dimensioner för ALLA beskrivande text- och attributfält (t.ex. "Benämning", "Artikel", "Kund", "Enhet", "Kategori", "Status", etc.).
+3. VOCABULARY (SYNONYMER PÅ SVENSKA OCH ENGELSKA FÖR VARJE MÅTT OCH DIMENSION):
+   - Skapa 4–7 naturliga synonymer per fält på svenska OCH engelska (korrekt affärsengelska!):
+     * "Benämning" -> SV: ["benämning", "namn", "beskrivning", "titel", "beteckning"] | EN: ["description", "name", "title", "designation", "label"]
+     * "Beställd mängd" -> SV: ["beställd mängd", "kvantitet", "volym", "antal beställt", "orderkvantitet"] | EN: ["ordered quantity", "order volume", "quantity ordered", "units ordered"]
+     * "Total tid" -> SV: ["total tid", "tidsåtgång", "arbetstid", "timmar", "varaktighet"] | EN: ["total time", "total hours", "time spent", "duration", "work time"]
+     * "Enhet" -> SV: ["enhet", "måttenhet", "enhetstyp"] | EN: ["unit", "unit of measure", "uom", "measurement unit"]
+4. EXEMPELFRÅGOR:
+   - Skapa 2–3 relevanta affärsfrågor på svenska och engelska för måtten i batchen.
 
-    if (lower.endsWith('id') || lower.endsWith('key') || lower.startsWith('%') || lower.startsWith('_')) {
-      hiddenFields.push(name);
-      continue;
-    }
-
-    if (lower.includes('date') || lower.includes('datum') || lower === 'year' || lower === 'month') {
-      calendarItems.push(name);
-      continue;
-    }
-
-    if (lower.includes('sales') || lower.includes('amount') || lower.includes('cost') || lower.includes('margin') || lower.includes('quantity') || lower.includes('price')) {
-      const measTitle = `Total ${name}`;
-      measures.push({
-        id: `meas_${lower}`,
-        title: measTitle,
-        label: measTitle,
-        expression: `Sum([${name}])`,
-        description: `Summa av ${name}`,
-        format: '#,##0 kr',
-        tags: ['Auto-Generated']
-      });
-
-      vocabSv.push({
-        targetName: measTitle,
-        type: 'measure',
-        locale: 'sv',
-        synonyms: [lower, `totalt ${lower}`, `summa ${lower}`]
-      });
-
-      vocabEn.push({
-        targetName: measTitle,
-        type: 'measure',
-        locale: 'en',
-        synonyms: [lower, `total ${lower}`, `sum of ${lower}`]
-      });
-      continue;
-    }
-
-    dimItems.push(name);
-    dimensions.push({
-      id: `dim_${lower}`,
-      title: name,
-      label: name,
-      fieldDefs: [name],
-      description: `Dimension för ${name}`,
-      tags: ['Auto-Generated']
-    });
-
-    vocabSv.push({
-      targetName: name,
-      type: 'dimension',
-      locale: 'sv',
-      synonyms: [lower, `${lower}namn`]
-    });
-
-    vocabEn.push({
-      targetName: name,
-      type: 'dimension',
-      locale: 'en',
-      synonyms: [lower, `${lower} name`]
-    });
-  }
-
-  return {
-    masterItems: { measures, dimensions },
-    logicalModel: {
-      groups: [
-        { name: 'Measures', type: 'measure', items: measures.map(m => m.title) },
-        { name: 'Dimensions', type: 'dimension', items: dimItems },
-        ...(calendarItems.length > 0 ? [{ name: 'Calendar', type: 'calendar' as const, items: calendarItems, defaultGrain: 'Month' as const }] : [])
+Returnera ett strikt JSON-objekt med följande struktur:
+{
+  "masterItems": {
+    "measures": [
+      {
+        "id": "meas_bestalld_mangd",
+        "title": "Beställd mängd",
+        "label": "Beställd mängd",
+        "expression": "Sum([Beställd mängd])",
+        "description": "Summan av beställd mängd",
+        "format": "#,##0 st",
+        "tags": ["AI-Generated"]
+      }
+    ],
+    "dimensions": [
+      {
+        "id": "dim_benamning",
+        "title": "Benämning",
+        "label": "Benämning",
+        "fieldDefs": ["Benämning"],
+        "description": "Artikelbenämning",
+        "tags": ["AI-Generated"]
+      }
+    ]
+  },
+  "logicalModel": {
+    "groups": [],
+    "hiddenFields": [],
+    "packages": [],
+    "hierarchies": []
+  },
+  "vocabulary": {
+    "sv": {
+      "terms": [
+        {
+          "targetName": "Beställd mängd",
+          "type": "measure",
+          "locale": "sv",
+          "synonyms": ["kvantitet", "volym", "antal beställt", "orderkvantitet"]
+        }
       ],
-      hiddenFields,
-      packages: [
-        { name: `${appName} Scope`, description: 'Standard analysomfång', groups: ['Measures', 'Dimensions', ...(calendarItems.length > 0 ? ['Calendar'] : [])] }
-      ],
-      hierarchies: [],
-      behaviors: []
+      "exampleQuestions": ["Hur stor är beställd mängd per månad?"]
     },
-    vocabulary: {
-      sv: { terms: vocabSv, exampleQuestions: ['Visa total försäljning per månad'] },
-      en: { terms: vocabEn, exampleQuestions: ['Show total sales by month'] }
+    "en": {
+      "terms": [
+        {
+          "targetName": "Beställd mängd",
+          "type": "measure",
+          "locale": "en",
+          "synonyms": ["ordered quantity", "order volume", "quantity ordered"]
+        }
+      ],
+      "exampleQuestions": ["What is ordered quantity by month?"]
     }
-  };
+  }
+}
+Svara ENDAST med ren JSON utan markdown-kodblock.
+`;
+
+    const { data, usedModel } = await callGeminiWithFallback(prompt);
+    return { plan: data, usedModel };
+  }
+
+  try {
+    // Kör batcharna parallellt med automatisk modellhantering
+    const results = await Promise.all(batches.map(b => processBatch(b)));
+
+    const usedModel = results[0]?.usedModel || 'gemini-3.6-flash';
+
+    const mergedMeasures: any[] = [];
+    const mergedDimensions: any[] = [];
+    const mergedSvTerms: any[] = [];
+    const mergedEnTerms: any[] = [];
+    const mergedSvQuestions: string[] = [];
+    const mergedEnQuestions: string[] = [];
+
+    results.forEach(({ plan: res }) => {
+      mergedMeasures.push(...(res.masterItems?.measures || []));
+      mergedDimensions.push(...(res.masterItems?.dimensions || []));
+      mergedSvTerms.push(...(res.vocabulary?.sv?.terms || []));
+      mergedEnTerms.push(...(res.vocabulary?.en?.terms || []));
+      mergedSvQuestions.push(...(res.vocabulary?.sv?.exampleQuestions || []));
+      mergedEnQuestions.push(...(res.vocabulary?.en?.exampleQuestions || []));
+    });
+
+    const finalPlan: FullBusinessLogicPlan = {
+      masterItems: {
+        measures: mergedMeasures,
+        dimensions: mergedDimensions
+      },
+      logicalModel: {
+        groups: [
+          {
+            name: "Mått & Kvantiteter",
+            type: "measure",
+            items: mergedMeasures.map(m => m.title)
+          },
+          {
+            name: "Attribut & Dimensioner",
+            type: "dimension",
+            items: mergedDimensions.map(d => d.title)
+          }
+        ],
+        hiddenFields: [],
+        packages: [
+          {
+            name: `${appName} Scope`,
+            description: "Analysomfång",
+            groups: ["Mått & Kvantiteter", "Attribut & Dimensioner"]
+          }
+        ],
+        hierarchies: []
+      },
+      vocabulary: {
+        sv: {
+          terms: mergedSvTerms,
+          exampleQuestions: Array.from(new Set(mergedSvQuestions)).slice(0, 6),
+          customAnalyses: []
+        },
+        en: {
+          terms: mergedEnTerms,
+          exampleQuestions: Array.from(new Set(mergedEnQuestions)).slice(0, 6),
+          customAnalyses: []
+        }
+      }
+    };
+
+    return res.status(200).json({ plan: finalPlan, source: 'gemini', modelUsed: usedModel });
+
+  } catch (err: any) {
+    console.error('Batchning misslyckades:', err.message);
+    return res.status(502).json({
+      error: `Kunde inte generera med Gemini: ${err.message}`
+    });
+  }
 }

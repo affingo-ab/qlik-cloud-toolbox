@@ -44,22 +44,19 @@ export interface LogicalHierarchy {
   levels: string[];
 }
 
-export interface LogicalBehavior {
-  type: 'prefer' | 'deny' | 'required_selection';
-  description: string;
-  measureGroup?: string;
-  preferredGroup?: string;
-  deniedGroup?: string;
-  requiredGroup?: string;
-  selectionField?: string;
-  selectionValues?: string[];
-}
-
 export interface VocabularyTerm {
   targetName: string;
   type: 'measure' | 'dimension' | 'field';
   locale: 'sv' | 'en';
   synonyms: string[];
+}
+
+export interface CustomAnalysis {
+  term: string;
+  analysisType: 'trend' | 'comparison' | 'breakdown' | 'ranking';
+  targetMetric: string;
+  locale: 'sv' | 'en';
+  description?: string;
 }
 
 export interface FullBusinessLogicPlan {
@@ -72,16 +69,17 @@ export interface FullBusinessLogicPlan {
     hiddenFields: string[];
     packages: LogicalPackage[];
     hierarchies: LogicalHierarchy[];
-    behaviors: LogicalBehavior[];
   };
   vocabulary: {
     sv: {
       terms: VocabularyTerm[];
       exampleQuestions: string[];
+      customAnalyses: CustomAnalysis[];
     };
     en: {
       terms: VocabularyTerm[];
       exampleQuestions: string[];
+      customAnalyses: CustomAnalysis[];
     };
   };
 }
