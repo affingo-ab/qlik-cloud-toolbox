@@ -11,11 +11,7 @@ import {
   Save,
   RotateCcw,
   Sparkles,
-  Layers,
-  Database,
-  Tag,
-  ArrowUpDown,
-  Filter
+  Database
 } from 'lucide-react';
 
 export interface ModelElement {
@@ -555,7 +551,6 @@ export const SemanticUnderstandingTab: React.FC<SemanticUnderstandingTabProps> =
           ) : (
             <div className="divide-y divide-slate-800/60">
               {filteredElements.map((el) => {
-                const isEditing = editingId === el.id;
                 const isSaving = savingId === el.id;
                 const isOverridden = Boolean(el.overrideDescription);
                 const currentText = editedDescriptions[el.id] ?? el.description ?? '';
