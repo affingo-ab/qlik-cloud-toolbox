@@ -1,12 +1,12 @@
-import { AiBusinessLogicEnricher } from './components/AiBusinessLogicEnricher';
-import { Wand2 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database,Folder
+  Download, CheckSquare, Square, Sliders, Database, Folder, Wand2, Brain, Sparkles
 } from 'lucide-react';
+import { AiBusinessLogicEnricher } from './components/AiBusinessLogicEnricher';
 import { SpacePermissionMatrix } from './SpacePermissionMatrix';
+import { SemanticUnderstandingTab } from './SemanticUnderstandingTab';
 
 interface ReloadItem {
   id: string;
@@ -47,7 +47,7 @@ export interface VocabularyItem {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'ai-hub' | 'master-items' | 'spaces' | 'reloads'>('ai-hub');
+  const [activeTab, setActiveTab] = useState<'semantic-understanding' | 'ai-hub' | 'master-items' | 'spaces' | 'reloads'>('semantic-understanding');
 
   // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
@@ -58,7 +58,7 @@ export default function App() {
   // Status & Laddning
   const [loading, setLoading] = useState(false);
   const [itemLoading, setItemLoading] = useState(false);
-   const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Reloads State
   const [reloadsList, setReloadsList] = useState<ReloadItem[]>([]);
@@ -79,7 +79,8 @@ export default function App() {
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [syncStatusLog, setSyncStatusLog] = useState<string | null>(null);
 
-  
+  // AI Semantic Understanding State
+  const [semanticAppId, setSemanticAppId] = useState<string>('');
 
   const formatTenantHost = (input: string) => {
     let clean = input.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -112,6 +113,7 @@ export default function App() {
     setDimensions([]);
     setSourceAppId('');
     setTargetAppId('');
+    setSemanticAppId('');
   };
 
   const getHeaders = () => {
@@ -260,7 +262,6 @@ export default function App() {
     }
   }, [sourceAppId]);
 
-
   // Synka Master Items
   const handleSyncMasterItems = async () => {
     if (!targetAppId || !apiToken) {
@@ -383,28 +384,27 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
         
-        {/* Header */}
+        {/* Header med Affingo Branding */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl">
-<div className="flex items-center gap-3">
-  {/* Modern diskret data-nod istället för det konstiga 'Å' */}
-  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 shadow-inner">
-    <Layers className="w-5 h-5 text-emerald-400" />
-  </div>
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 shadow-inner">
+              <Layers className="w-5 h-5 text-emerald-400" />
+            </div>
 
-  <div>
-    <div className="flex items-center gap-2.5">
-      <span className="text-xl font-bold tracking-tight text-white font-sans">
-        affingo
-      </span>
-      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-950 text-emerald-400 border border-emerald-800/60 uppercase tracking-wider">
-        Toolbox
-      </span>
-    </div>
-    <div className="text-[11px] text-slate-400 font-medium">
-      Qlik Cloud Enterprise Administration & AI Hub
-    </div>
-  </div>
-</div>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl font-bold tracking-tight text-white font-sans">
+                  affingo
+                </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-950 text-emerald-400 border border-emerald-800/60 uppercase tracking-wider">
+                  Toolbox
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 font-medium">
+                Qlik Cloud Enterprise Administration & AI Hub
+              </div>
+            </div>
+          </div>
 
           <div className="flex items-center gap-2">
             <button
@@ -426,56 +426,67 @@ export default function App() {
         </div>
 
         {/* Flikar */}
-        <div className="flex border-b border-slate-800 space-x-2">
+        <div className="flex border-b border-slate-800 gap-1.5 overflow-x-hidden">
+          <button
+            onClick={() => setActiveTab('semantic-understanding')}
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+              activeTab === 'semantic-understanding'
+                ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
+            }`}
+          >
+            <Brain className="w-3.5 h-3.5 text-emerald-400" />
+            AI Semantic Understanding
+          </button>
           <button
             onClick={() => setActiveTab('ai-hub')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
               activeTab === 'ai-hub'
                 ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
             }`}
           >
-            <Wand2 className="w-4 h-4 text-emerald-400" />
-            AI Business Logic & Vocabulary Hub
+            <Wand2 className="w-3.5 h-3.5 text-emerald-400" />
+            AI Business Logic & Vocab
           </button>
           <button
             onClick={() => setActiveTab('master-items')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
               activeTab === 'master-items'
                 ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
             }`}
           >
-            <Sliders className="w-4 h-4" />
-            Master Item Distributor
+            <Sliders className="w-3.5 h-3.5" />
+            Master Items
           </button>
           <button
             onClick={() => setActiveTab('reloads')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
               activeTab === 'reloads'
                 ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
             }`}
           >
-            <Play className="w-4 h-4" />
+            <Play className="w-3.5 h-3.5" />
             Reload Monitor
           </button>
           <button
             onClick={() => setActiveTab('spaces')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
               activeTab === 'spaces'
                 ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
             }`}
           >
-            <Folder className="w-4 h-4" />
+            <Folder className="w-3.5 h-3.5" />
             Space Matrix
           </button>          
         </div>
 
         {/* Anslutningsinställningar */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
               <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                 <Server className="w-3.5 h-3.5 text-emerald-400" /> Tenant URL / Domän
@@ -521,6 +532,21 @@ export default function App() {
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
               />
             </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Gemini API Key (Gratis AI)
+              </label>
+              <input
+                type="password"
+                placeholder="AIzaSy..."
+                value={geminiKeyInput}
+                onChange={(e) => {
+                  setGeminiKeyInput(e.target.value);
+                  localStorage.setItem('gemini_api_key', e.target.value.trim());
+                }}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
           </div>
         </div>
 
@@ -533,10 +559,21 @@ export default function App() {
         )}
 
         {/* ============================================================ */}
-        {/* FLIK 1: AI VOCABULARY & BUSINESS LOGIC HUB */}
+        {/* FLIK 1: AI SEMANTIC UNDERSTANDING (NYTT AI OPTIMIZATION LAGER) */}
         {/* ============================================================ */}
+        {activeTab === 'semantic-understanding' && (
+          <SemanticUnderstandingTab
+            tenant={formatTenantHost(tenantInput)}
+            apiKey={apiToken}
+            webIntegrationId={webIntegrationId}
+            availableApps={availableApps}
+            selectedAppId={semanticAppId}
+            onSelectAppId={setSemanticAppId}
+          />
+        )}
+
         {/* ============================================================ */}
-        {/* FLIK: AI BUSINESS LOGIC ENRICHER */}
+        {/* FLIK 2: AI BUSINESS LOGIC & VOCABULARY HUB */}
         {/* ============================================================ */}
         {activeTab === 'ai-hub' && (
           <AiBusinessLogicEnricher
@@ -547,9 +584,8 @@ export default function App() {
           />
         )}
 
-
         {/* ============================================================ */}
-        {/* FLIK 2: MASTER ITEM DISTRIBUTOR */}
+        {/* FLIK 3: MASTER ITEM DISTRIBUTOR */}
         {/* ============================================================ */}
         {activeTab === 'master-items' && (
           <div className="space-y-6">
@@ -863,7 +899,7 @@ export default function App() {
         )}
 
         {/* ============================================================ */}
-        {/* FLIK 3: RELOAD MONITOR */}
+        {/* FLIK 4: RELOAD MONITOR */}
         {/* ============================================================ */}
         {activeTab === 'reloads' && (
           <div className="space-y-6">
@@ -974,14 +1010,18 @@ export default function App() {
             </div>
           </div>
         )}
-{/* LÄGG IN SPACE MATRIX DIREKT HÄR: */}
-{activeTab === 'spaces' && (
-    <SpacePermissionMatrix 
-      tenantInput={tenantInput} 
-      apiToken={apiToken} 
-      webIntegrationId={webIntegrationId} 
-    />
-)}
+
+        {/* ============================================================ */}
+        {/* FLIK 5: SPACE MATRIX */}
+        {/* ============================================================ */}
+        {activeTab === 'spaces' && (
+          <SpacePermissionMatrix 
+            tenantInput={tenantInput} 
+            apiToken={apiToken} 
+            webIntegrationId={webIntegrationId} 
+          />
+        )}
+
       </div>
     </div>
   );
