@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database, Folder, Wand2, Brain, Sparkles
+  Download, CheckSquare, Square, Sliders, Database, Folder, Wand2, Brain, Sparkles, HardDrive
 } from 'lucide-react';
 import { AiBusinessLogicEnricher } from './components/AiBusinessLogicEnricher';
 import { SpacePermissionMatrix } from './SpacePermissionMatrix';
 import { SemanticUnderstandingTab } from './SemanticUnderstandingTab';
+import { CapacityOptimization } from './CapacityOptimization';
 
 interface ReloadItem {
   id: string;
@@ -47,7 +48,7 @@ export interface VocabularyItem {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'semantic-understanding' | 'ai-hub' | 'master-items' | 'spaces' | 'reloads'>('semantic-understanding');
+  const [activeTab, setActiveTab] = useState<'semantic-understanding' | 'ai-hub' | 'master-items' | 'capacity' | 'spaces' | 'reloads'>('semantic-understanding');
 
   // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
@@ -459,6 +460,17 @@ export default function App() {
           >
             <Sliders className="w-3.5 h-3.5" />
             Master Items
+          </button>
+          <button
+            onClick={() => setActiveTab('capacity')}
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-t border-x ${
+              activeTab === 'capacity'
+                ? 'bg-slate-900 text-emerald-400 border-slate-800 border-b-transparent shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/40'
+            }`}
+          >
+            <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+            Kapacitet & QVD
           </button>
           <button
             onClick={() => setActiveTab('reloads')}
@@ -899,7 +911,17 @@ export default function App() {
         )}
 
         {/* ============================================================ */}
-        {/* FLIK 4: RELOAD MONITOR */}
+        {/* FLIK 4: KAPACITET & QVD-ANALYS */}
+        {/* ============================================================ */}
+        {activeTab === 'capacity' && (
+          <CapacityOptimization 
+            tenantUrl={formatTenantHost(tenantInput)} 
+            apiKey={apiToken} 
+          />
+        )}
+
+        {/* ============================================================ */}
+        {/* FLIK 5: RELOAD MONITOR */}
         {/* ============================================================ */}
         {activeTab === 'reloads' && (
           <div className="space-y-6">
@@ -1012,7 +1034,7 @@ export default function App() {
         )}
 
         {/* ============================================================ */}
-        {/* FLIK 5: SPACE MATRIX */}
+        {/* FLIK 6: SPACE MATRIX */}
         {/* ============================================================ */}
         {activeTab === 'spaces' && (
           <SpacePermissionMatrix 
