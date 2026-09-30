@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import WebSocket from 'ws';
 
 interface QlikItem {
   id: string;
@@ -14,80 +13,9 @@ interface SpaceInfo {
   name: string;
 }
 
-function fetchAppScriptViaEngine(host: string, apiKey: string, appId: string): Promise<string> {
-  return new Promise((resolve) => {
-    const wsUrl = `wss://${host}/app/${appId}`;
-    const ws = new WebSocket(wsUrl, {
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
-    });
-
-    let docHandle = -1;
-    let script = '';
-    const timeout = setTimeout(() => {
-      try { ws.terminate(); } catch {}
-      resolve('');
-    }, 7000);
-
-    ws.on('open', () => {
-      ws.send(JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'OpenDoc',
-        handle: -1,
-        params: [appId, '', '', '', false],
-      }));
-    });
-
-    ws.on('message', (data: WebSocket.Data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-
-        if (msg.id === 1) {
-          if (msg.error) {
-            clearTimeout(timeout);
-            ws.close();
-            resolve('');
-            return;
-          }
-          docHandle = msg.result?.qReturn?.qHandle;
-          if (docHandle) {
-            ws.send(JSON.stringify({
-              jsonrpc: '2.0',
-              id: 2,
-              method: 'GetScript',
-              handle: docHandle,
-              params: [],
-            }));
-          } else {
-            clearTimeout(timeout);
-            ws.close();
-            resolve('');
-          }
-        } else if (msg.id === 2) {
-          script = msg.result?.qScript || '';
-          clearTimeout(timeout);
-          ws.close();
-          resolve(script);
-        }
-      } catch {
-        clearTimeout(timeout);
-        ws.close();
-        resolve('');
-      }
-    });
-
-    ws.on('error', () => {
-      clearTimeout(timeout);
-      resolve('');
-    });
-
-    ws.on('close', () => {
-      clearTimeout(timeout);
-      resolve(script);
-    });
-  });
+interface LineageEntry {
+  discriminator?: string;
+  statement?: string;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -108,7 +36,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    // 1. Spaces
+    // 1. Hämta Spaces
     const spacesMap: Record<string, string> = { personal: 'Personal Space' };
     try {
       let spaceUrl: string | null = `${baseUrl}/api/v1/spaces?limit=100`;
@@ -119,14 +47,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           (spaceData.data || []).forEach((s: SpaceInfo) => {
             spacesMap[s.id] = s.name;
           });
-          spaceUrl = spaceData.links?.next?.href || null;
+          const nextHref = spaceData.links?.next?.href;
+          spaceUrl = nextHref ? (nextHref.startsWith('http') ? nextHref : `${baseUrl}${nextHref.startsWith('/') ? '' : '/'}${nextHref}`) : null;
         } else {
           spaceUrl = null;
         }
       }
     } catch {}
 
-    // 2. Hämta alla QVD-filer via Items API
+    // 2. Hämta alla QVD-filer i tenanten
     const qvdItems: QlikItem[] = [];
     let itemsUrl: string | null = `${baseUrl}/api/v1/items?limit=100`;
     let page = 0;
@@ -158,17 +87,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         }
       }
-      itemsUrl = itemsData.links?.next?.href || null;
+
+      const nextHref = itemsData.links?.next?.href;
+      itemsUrl = nextHref ? (nextHref.startsWith('http') ? nextHref : `${baseUrl}${nextHref.startsWith('/') ? '' : '/'}${nextHref}`) : null;
     }
 
-    // Uppslag
+    // Registrera kända QVD:er
     const qvdUsage: Record<string, { readers: Set<string>; writers: Set<string> }> = {};
     for (const qvd of qvdItems) {
       const lower = qvd.name.toLowerCase().trim();
       qvdUsage[lower] = { readers: new Set(), writers: new Set() };
     }
 
-    // 3. Hämta appar
+    // 3. Hämta alla appar i tenanten med korrekt paginering
     const appItems: { id: string; name: string }[] = [];
     let appUrl: string | null = `${baseUrl}/api/v1/items?resourceType=app&limit=100`;
 
@@ -184,79 +115,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           name: a.name || a.resourceAttributes?.name || 'Namnlös app',
         });
       });
-      appUrl = appData.links?.next?.href || null;
+
+      const nextHref = appData.links?.next?.href;
+      appUrl = nextHref ? (nextHref.startsWith('http') ? nextHref : `${baseUrl}${nextHref.startsWith('/') ? '' : '/'}${nextHref}`) : null;
     }
 
-    let scriptsRead = 0;
-    let scriptsFailed = 0;
+    const qvdExtractRegex = /([a-zA-Z0-9_\-\.\s]+\.qvd)/gi;
+    let appsSuccessfullyRead = 0;
+    let appsFailed = 0;
 
-    // 4. Scanna skript via QIX WebSocket
-    const BATCH_SIZE = 5;
+    // 4. Analysera Lineage via REST för alla appar i batcher om 8
+    const BATCH_SIZE = 8;
     for (let i = 0; i < appItems.length; i += BATCH_SIZE) {
       const batch = appItems.slice(i, i + BATCH_SIZE);
       await Promise.all(
         batch.map(async (app) => {
           try {
-            const script = await fetchAppScriptViaEngine(cleanTenant, apiKey, app.id);
-            if (script && script.trim().length > 0) {
-              scriptsRead++;
-              const scriptLower = script.toLowerCase();
-              const appNameLower = app.name.toLowerCase();
-              
-              // Är detta en typisk generator/extrakt-app?
-              const isGeneratorApp = /extract|generator|creator|skapa|staging|stage|raw|källa/i.test(appNameLower);
-              const scriptHasStore = scriptLower.includes('store ') && (scriptLower.includes(' into ') || scriptLower.includes('into[') || scriptLower.includes('into '));
+            const lineageRes = await fetch(`${baseUrl}/api/v1/apps/${app.id}/data/lineage`, { headers });
+            if (lineageRes.ok) {
+              appsSuccessfullyRead++;
+              const entries: LineageEntry[] = await lineageRes.json();
 
-              for (const qvd of qvdItems) {
-                const qvdFullName = qvd.name.toLowerCase().trim(); // t.ex. "mhpicd.qvd"
-                const qvdBaseName = qvdFullName.replace(/\.qvd$/, ''); // t.ex. "mhpicd"
+              for (const entry of entries) {
+                const disc = (entry.discriminator || '').toLowerCase();
+                const stmt = (entry.statement || '').toLowerCase();
+                const combined = `${disc} ${stmt}`;
 
-                // Leta efter träff: antingen exakt filnamn ("mhpicd.qvd") eller tabellnamn i ordgräns ("mhpicd")
-                const hasFullMatch = scriptLower.includes(qvdFullName);
-                const hasBaseMatch = new RegExp(`\\b${qvdBaseName}\\b`, 'i').test(scriptLower);
+                // Är detta en STORE-sats?
+                const isStore = disc.includes('{store -') || stmt.startsWith('store ');
 
-                if (hasFullMatch || (isGeneratorApp && hasBaseMatch)) {
-                  let isWriter = false;
-                  let isReader = false;
+                let match;
+                qvdExtractRegex.lastIndex = 0;
+                while ((match = qvdExtractRegex.exec(combined)) !== null) {
+                  const fullMatch = match[1].trim();
+                  const cleanFileName = (fullMatch.split(/[\/\\]/).pop() || fullMatch).toLowerCase().trim();
 
-                  // 1. Kolla om tabellen/filen nämns i närheten av STORE
-                  if (scriptHasStore) {
-                    const storePos = scriptLower.indexOf('store ');
-                    // Om appen har STORE och nämner tabellnamnet (t.ex. i en extrakt-app)
-                    if (isGeneratorApp || scriptLower.includes(`store [${qvdBaseName}]`) || scriptLower.includes(`store ${qvdBaseName} `)) {
-                      isWriter = true;
-                    }
-                  }
-
-                  // 2. Kolla om filen läses med FROM
-                  if (scriptLower.includes(`from [`) || scriptLower.includes(`from `)) {
-                    if (hasFullMatch && !isGeneratorApp) {
-                      isReader = true;
-                    }
-                  }
-
-                  // Fallback: Om det är en generator-app är den writer, annars reader
-                  if (!isWriter && !isReader) {
-                    if (isGeneratorApp) {
-                      isWriter = true;
+                  if (qvdUsage[cleanFileName]) {
+                    if (isStore) {
+                      qvdUsage[cleanFileName].writers.add(app.name);
                     } else {
-                      isReader = true;
+                      qvdUsage[cleanFileName].readers.add(app.name);
                     }
-                  }
-
-                  if (isWriter) {
-                    qvdUsage[qvdFullName].writers.add(app.name);
-                  }
-                  if (isReader) {
-                    qvdUsage[qvdFullName].readers.add(app.name);
                   }
                 }
               }
             } else {
-              scriptsFailed++;
+              appsFailed++;
             }
           } catch {
-            scriptsFailed++;
+            appsFailed++;
           }
         })
       );
@@ -289,8 +196,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       orphanQvds: results.filter((r) => r.isOrphan).length,
       activeQvds: results.filter((r) => !r.isOrphan).length,
       totalAppsScanned: appItems.length,
-      scriptsRead,
-      scriptsFailed,
+      scriptsRead: appsSuccessfullyRead,
+      scriptsFailed: appsFailed,
     };
 
     return res.status(200).json({ summary, qvds: results });
