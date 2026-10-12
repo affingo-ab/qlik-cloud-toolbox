@@ -1,1 +1,0 @@
-# Affingo CI setup
