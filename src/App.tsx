@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { 
   RefreshCw, CheckCircle2, XCircle, Clock, Server, Key, Play, 
   Search, AlertCircle, LogOut, ShieldCheck, Layers, ArrowRight, 
-  Download, CheckSquare, Square, Sliders, Database, Folder, Wand2, Brain, Sparkles, HardDrive
+  Download, CheckSquare, Square, Sliders, Database, Folder, Wand2, Brain, Sparkles, HardDrive,
+  Info
 } from 'lucide-react';
 import { AiBusinessLogicEnricher } from './components/AiBusinessLogicEnricher';
 import { SpacePermissionMatrix } from './SpacePermissionMatrix';
 import { SemanticUnderstandingTab } from './SemanticUnderstandingTab';
 import { CapacityOptimization } from './CapacityOptimization';
+import { AboutModal } from './components/AboutModal';
 
 interface ReloadItem {
   id: string;
@@ -49,6 +51,7 @@ export interface VocabularyItem {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'semantic-understanding' | 'ai-hub' | 'master-items' | 'capacity' | 'spaces' | 'reloads'>('semantic-understanding');
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
 
   // Anslutningsinställningar
   const [tenantInput, setTenantInput] = useState(() => localStorage.getItem('qlik_tenant_domain') || '');
@@ -408,6 +411,14 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsAboutOpen(true)}
+              title="Om Qlik Cloud Toolbox"
+              aria-label="Om Qlik Cloud Toolbox"
+              className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-emerald-400 rounded-xl border border-slate-700 transition cursor-pointer"
+            >
+              <Info className="w-4 h-4" />
+            </button>
             <button
               onClick={clearSettings}
               title="Rensa sparade uppgifter"
@@ -1043,6 +1054,12 @@ export default function App() {
             webIntegrationId={webIntegrationId} 
           />
         )}
+
+        {/* About Modal */}
+        <AboutModal
+          isOpen={isAboutOpen}
+          onClose={() => setIsAboutOpen(false)}
+        />
 
       </div>
     </div>
