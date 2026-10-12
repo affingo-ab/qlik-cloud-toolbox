@@ -413,10 +413,9 @@ export default function App() {
             <button
               onClick={() => setIsAboutOpen(true)}
               title="Om Qlik Cloud Toolbox"
-              className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-emerald-400 rounded-xl border border-slate-700 transition cursor-pointer"
-              aria-label="Om Qlik Cloud Toolbox"
+              className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl border border-slate-700 transition cursor-pointer"
             >
-              <Info className="w-4 h-4" />
+              <Info className="w-4 h-4 text-emerald-400" />
             </button>
             <button
               onClick={clearSettings}
@@ -1054,10 +1053,10 @@ export default function App() {
           />
         )}
 
-        {/* Modal: Om Qlik Cloud Toolbox */}
-        <AboutModal 
-          isOpen={isAboutOpen} 
-          onClose={() => setIsAboutOpen(false)} 
+        {/* Om Qlik Cloud Toolbox Modal */}
+        <AboutModal
+          isOpen={isAboutOpen}
+          onClose={() => setIsAboutOpen(false)}
         />
 
       </div>
